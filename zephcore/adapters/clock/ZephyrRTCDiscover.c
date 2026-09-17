@@ -55,6 +55,12 @@ static const struct rtc_desc rtc_descs[] = {
 static const struct rtc_desc *s_active;
 static bool s_probed;
 
+/* Per-candidate probe outcome, for the reporting accessors. Stays UNPROBED for
+ * entries the loop never reached -- it stops at the first chip holding a valid
+ * time, so "not absent" and "present" are different answers and we keep them
+ * apart rather than inferring one from the other. */
+static uint8_t s_state[ARRAY_SIZE(rtc_descs)];
+
 #define BCD2BIN(x) ((((x) >> 4) & 0x0F) * 10 + ((x) & 0x0F))
 #define BIN2BCD(x) ((((x) / 10) << 4) | ((x) % 10))
 
@@ -118,9 +124,11 @@ static bool rtc_probe(uint32_t *epoch_out)
 		uint8_t blk[7];
 
 		if (!device_is_ready(d->bus)) {
+			s_state[i] = ZEPHCORE_RTC_ABSENT;
 			continue;
 		}
 		if (i2c_burst_read(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) != 0) {
+			s_state[i] = ZEPHCORE_RTC_ABSENT;
 			continue;  /* no ACK => chip absent */
 		}
 
@@ -142,8 +150,14 @@ static bool rtc_probe(uint32_t *epoch_out)
 		bool unreliable = rtc_time_unreliable(d, blk);
 
 		if (!bcd_ok && !unreliable) {
+			/* Something ACKed here, but it does not behave like an RTC --
+			 * an IMU at 0x68, say. Absent means "no RTC here", which is
+			 * the honest answer for reporting too. */
+			s_state[i] = ZEPHCORE_RTC_ABSENT;
 			continue;  /* neither valid time nor a lost-power RTC => skip */
 		}
+
+		s_state[i] = ZEPHCORE_RTC_PRESENT;
 
 		if (s_active == NULL) {
 			s_active = d;  /* RTC => our write-back target */
@@ -234,6 +248,50 @@ void zephcore_rtc_save(uint32_t epoch)
 	LOG_DBG("RTC %s: persisted time", d->name);
 }
 
+static void rtc_fill(size_t i, struct zephcore_rtc_entry *out)
+{
+	const struct rtc_desc *d = &rtc_descs[i];
+
+	out->name   = d->name;
+	out->bus    = d->bus->name;
+	out->addr   = d->addr;
+	out->state  = (enum zephcore_rtc_state)s_state[i];
+	out->active = (s_active == d);
+}
+
+size_t zephcore_rtc_declared(void)
+{
+	return ARRAY_SIZE(rtc_descs);
+}
+
+bool zephcore_rtc_get(size_t i, struct zephcore_rtc_entry *out)
+{
+	if (out == NULL || i >= ARRAY_SIZE(rtc_descs)) {
+		return false;
+	}
+	rtc_fill(i, out);
+	return true;
+}
+
+bool zephcore_rtc_active(struct zephcore_rtc_entry *out)
+{
+	if (out == NULL || s_active == NULL) {
+		return false;
+	}
+	for (size_t i = 0; i < ARRAY_SIZE(rtc_descs); i++) {
+		if (&rtc_descs[i] == s_active) {
+			rtc_fill(i, out);
+			return true;
+		}
+	}
+	return false;
+}
+
+bool zephcore_rtc_probed(void)
+{
+	return s_probed;
+}
+
 #else  /* no zephcore,rtc-i2c node in DT — link-compatible stubs */
 
 bool zephcore_rtc_restore(uint32_t *epoch_out)
@@ -245,6 +303,29 @@ bool zephcore_rtc_restore(uint32_t *epoch_out)
 void zephcore_rtc_save(uint32_t epoch)
 {
 	ARG_UNUSED(epoch);
+}
+
+size_t zephcore_rtc_declared(void)
+{
+	return 0;
+}
+
+bool zephcore_rtc_get(size_t i, struct zephcore_rtc_entry *out)
+{
+	ARG_UNUSED(i);
+	ARG_UNUSED(out);
+	return false;
+}
+
+bool zephcore_rtc_active(struct zephcore_rtc_entry *out)
+{
+	ARG_UNUSED(out);
+	return false;
+}
+
+bool zephcore_rtc_probed(void)
+{
+	return false;
 }
 
 #endif /* DT_HAS_COMPAT_STATUS_OKAY(zephcore_rtc_i2c) */
