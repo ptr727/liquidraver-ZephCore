@@ -13,8 +13,10 @@
  *     companion used to read and clear it in main(), so by the time a CLI
  *     command asked, the cause was gone and the honest answer was 0.
  *   - Whoever never clears it reports stale bits. The repeater and room
- *     server never touched the register, so a board that was once
- *     brownout-reset reported BROWNOUT on every boot thereafter.
+ *     server never touched the register, so a board reset by the watchdog
+ *     once reported WATCHDOG on every boot thereafter. Which bits a given
+ *     SoC can report is its own business -- nRF52840, for one, never
+ *     reports BROWNOUT at all -- but whatever it does latch accumulates.
  *
  * This captures the cause once at POST_KERNEL, before main() runs on any
  * role, then clears the register so the next boot starts clean. Every reader
@@ -37,6 +39,12 @@ extern "C" {
  * The reset cause latched for THIS boot. Returns false if the platform has no
  * hwinfo reset-cause support, which is different from a cause of 0 (the chip
  * reported no known cause) and is reported differently.
+ *
+ * Call this from main() or later. The capture runs as a SYS_INIT hook at
+ * POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, so a caller running before
+ * that -- PRE_KERNEL_1 or _2, or POST_KERNEL at an equal or lower priority
+ * value, where link order decides and nothing enforces it -- gets false and
+ * cannot tell that apart from a platform that cannot report a cause at all.
  */
 bool zephcore_boot_reset_cause(uint32_t *out);
 

@@ -23,6 +23,7 @@ LOG_MODULE_REGISTER(zephcore_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #include <adapters/clock/ZephyrRTCClock.h>
 #include <adapters/clock/ZephyrRTCDiscover.h>
 #include <zephyr/bluetooth/bluetooth.h>
+#include <zephyr/drivers/hwinfo.h>
 #include <helpers/boot_info.h>
 #include <zephyr/sys/reboot.h>
 #include <ZephyrSensorManager.h>
@@ -1409,8 +1410,18 @@ int main(void)
 			 *
 			 * n is 0 when the cause is 0 or carries only bits this build
 			 * has no label for, which is the same "nothing worth saying"
-			 * the old explicit bit test meant. */
-			if (n > 0) {
+			 * the old explicit bit test meant.
+			 *
+			 * Two causes are labelled but not worth a chat message on
+			 * their own. A wake from a deliberate low-power shutdown says
+			 * less than the "Last shutdown" line appended below, and a
+			 * debugger-initiated reset is the developer's own doing. Both
+			 * still render in the log line and in the notice when some
+			 * other cause raised it, so nothing is hidden -- this decides
+			 * only whether to speak unprompted. */
+			const uint32_t quiet = RESET_LOW_POWER_WAKE | RESET_DEBUG;
+
+			if (n > 0 && (cause & ~quiet) != 0) {
 				snprintf(boot_cause_msg, sizeof(boot_cause_msg),
 					 "Restarted:%s", boot_cause_labels);
 			}
