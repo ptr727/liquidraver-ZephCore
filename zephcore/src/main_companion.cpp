@@ -1381,7 +1381,15 @@ int main(void)
 	boot_cause_msg[0] = '\0';
 	{
 		uint32_t cause;
-		/* Every label the renderer can emit, space-prefixed: 126 + NUL. */
+		/* Every label the renderer can emit, space-prefixed: 126 + NUL.
+		 *
+		 * Block scope is safe even though board builds log deferred. A %s
+		 * argument pointing at read-write storage is copied into the log
+		 * message when the message is built, not read later: the package
+		 * carries CBPRINTF_PACKAGE_ADD_RW_STR_POS and is converted with
+		 * CBPRINTF_PACKAGE_CONVERT_RW_STR, and the zero-copy path is
+		 * skipped whenever such a string is present. (log_strdup() is the
+		 * log v1 answer to this and no longer exists.) */
 		char boot_cause_labels[128];
 		/* Captured at POST_KERNEL by helpers/boot_info.c, which also did the
 		 * clearing this block used to do. Reading the captured copy rather
