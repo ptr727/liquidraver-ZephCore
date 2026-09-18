@@ -135,29 +135,31 @@ struct I2cDecl {
 
 #define HW_I2C_ENTRY(node_id)                                    \
 	{                                                        \
-		DT_NODE_FULL_NAME(DT_PARENT(node_id)),           \
+		DT_NODE_FULL_NAME(DT_BUS(node_id)),              \
 		DT_NODE_FULL_NAME(node_id),                      \
 		DT_PROP_BY_IDX(node_id, compatible, 0),          \
 		(uint16_t)DT_REG_ADDR(node_id),                  \
 	},
 
-/* Skip any child without both reg and compatible -- it is not an addressable
- * chip and has nothing to report. */
-#define HW_I2C_CHILD(node_id)                                             \
-	IF_ENABLED(UTIL_AND(DT_NODE_HAS_PROP(node_id, reg),               \
-			    DT_NODE_HAS_PROP(node_id, compatible)),       \
+/*
+ * Every enabled node that sits on an I2C bus and is an addressable chip.
+ *
+ * Walks the whole devicetree via DT_FOREACH_STATUS_OKAY_NODE and filters with
+ * DT_ON_BUS rather than naming bus nodelabels: this tree already has boards on
+ * i2c22 and i2c30 (nrf54l, seeed_lr2021_evk), so any hardcoded i2c0/1/2 list
+ * silently omits their devices. Silently omitting a declared chip is the one
+ * thing this report must never do.
+ *
+ * Nodes without both reg and compatible are skipped -- not addressable chips.
+ */
+#define HW_I2C_NODE(node_id)                                              \
+	IF_ENABLED(UTIL_AND(DT_ON_BUS(node_id, i2c),                      \
+		   UTIL_AND(DT_NODE_HAS_PROP(node_id, reg),                \
+			    DT_NODE_HAS_PROP(node_id, compatible))),      \
 		   (HW_I2C_ENTRY(node_id)))
 
 const I2cDecl i2c_decls[] = {
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(i2c0), okay)
-	DT_FOREACH_CHILD_STATUS_OKAY(DT_NODELABEL(i2c0), HW_I2C_CHILD)
-#endif
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(i2c1), okay)
-	DT_FOREACH_CHILD_STATUS_OKAY(DT_NODELABEL(i2c1), HW_I2C_CHILD)
-#endif
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(i2c2), okay)
-	DT_FOREACH_CHILD_STATUS_OKAY(DT_NODELABEL(i2c2), HW_I2C_CHILD)
-#endif
+	DT_FOREACH_STATUS_OKAY_NODE(HW_I2C_NODE)
 	/* Sentinel. A board may declare no I2C children at all, and a
 	 * zero-length array is not valid C++. Never reported -- see
 	 * i2c_decl_count(). */
@@ -166,33 +168,34 @@ const I2cDecl i2c_decls[] = {
 
 constexpr size_t i2c_decl_count() { return ARRAY_SIZE(i2c_decls) - 1; }
 
-/*
- * Bus handles, for the live scan only.
- *
- * Gated on CONFIG_I2C as well as node status: a devicetree node can be
- * status-okay while no I2C driver is compiled in (native_sim is exactly that),
- * and DEVICE_DT_GET on such a node references a device object nothing ever
- * defines, so the image fails to LINK rather than reporting a missing bus at
- * runtime. The declared inventory above deliberately takes no device handles
- * for the same reason.
- */
 #if IS_ENABLED(CONFIG_I2C)
-const struct device *const i2c_buses[] = {
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(i2c0), okay)
-	DEVICE_DT_GET(DT_NODELABEL(i2c0)),
-#endif
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(i2c1), okay)
-	DEVICE_DT_GET(DT_NODELABEL(i2c1)),
-#endif
-#if DT_NODE_HAS_STATUS(DT_NODELABEL(i2c2), okay)
-	DEVICE_DT_GET(DT_NODELABEL(i2c2)),
-#endif
+/*
+ * The controller behind each declared device, for the live scan. Derived from
+ * the same devicetree walk, so it follows whatever nodelabels a board uses
+ * rather than a hardcoded i2c0/1/2 list. Entries repeat once per child and are
+ * de-duplicated at scan time.
+ *
+ * DEVICE_DT_GET is safe here in a way it is not for the child nodes: the parent
+ * of an I2C child is an I2C controller, and this table only exists when
+ * CONFIG_I2C is on, so a driver is instantiated for it.
+ *
+ * Limitation, stated rather than hidden: a bus with no declared device at all
+ * is not scanned, because nothing in the devicetree walk names it.
+ */
+#define HW_I2C_BUS_ENTRY(node_id) DEVICE_DT_GET(DT_BUS(node_id)),
+
+#define HW_I2C_BUS_NODE(node_id)                                          \
+	IF_ENABLED(UTIL_AND(DT_ON_BUS(node_id, i2c),                      \
+		   UTIL_AND(DT_NODE_HAS_PROP(node_id, reg),                \
+			    DT_NODE_HAS_PROP(node_id, compatible))),      \
+		   (HW_I2C_BUS_ENTRY(node_id)))
+
+const struct device *const i2c_bus_refs[] = {
+	DT_FOREACH_STATUS_OKAY_NODE(HW_I2C_BUS_NODE)
 	nullptr, /* sentinel, same reason as i2c_decls */
 };
 
-constexpr size_t i2c_bus_count() { return ARRAY_SIZE(i2c_buses) - 1; }
-#else
-constexpr size_t i2c_bus_count() { return 0; }
+constexpr size_t i2c_bus_ref_count() { return ARRAY_SIZE(i2c_bus_refs) - 1; }
 #endif /* CONFIG_I2C */
 
 /* Name a scanned address from the devicetree, when the board declared it. */
@@ -318,13 +321,25 @@ void section_i2c_scan(Sink *s)
 	/* Different from "scanned and found nothing": this build cannot scan. */
 	sink_line(s, "i2c: no I2C support compiled in");
 #else
-	if (i2c_bus_count() == 0) {
-		sink_line(s, "i2c: no bus enabled");
-		return;
-	}
+	unsigned buses = 0;
 
-	for (size_t b = 0; b < i2c_bus_count(); b++) {
-		const struct device *bus = i2c_buses[b];
+	for (size_t bi = 0; bi < i2c_bus_ref_count(); bi++) {
+		const struct device *bus = i2c_bus_refs[bi];
+
+		/* Skip a controller already scanned: the table carries one
+		 * entry per declared child, so a bus with four devices on it
+		 * appears four times. */
+		bool seen = false;
+		for (size_t j = 0; j < bi; j++) {
+			if (i2c_bus_refs[j] == bus) {
+				seen = true;
+				break;
+			}
+		}
+		if (seen) {
+			continue;
+		}
+		buses++;
 
 		if (!device_is_ready(bus)) {
 			sink_line(s, "%s: not ready", bus->name);
@@ -371,6 +386,10 @@ void section_i2c_scan(Sink *s)
 		} else {
 			sink_line(s, "%s", line);
 		}
+	}
+
+	if (buses == 0) {
+		sink_line(s, "i2c: no bus enabled");
 	}
 #endif /* CONFIG_I2C */
 }
@@ -471,21 +490,62 @@ void section_summary(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 	(void)board;
 }
 
-/* Parse an optional trailing page index. Unsigned throughout, and a value
- * beyond any plausible line count is clamped rather than wrapped. */
-unsigned parse_start(const char *arg)
+/*
+ * Match `name` as a whole word at the start of arg, returning the remainder or
+ * nullptr.
+ *
+ * A bare prefix test is the surrounding CommonCLI house style, but this command
+ * documents a usage string for anything it does not recognise, and a prefix
+ * test breaks that promise: `hw boardwalk` would run `hw board` and quietly
+ * discard the rest.
+ */
+const char *match_word(const char *arg, const char *name)
 {
-	if (arg == nullptr) {
-		return 0;
+	size_t n = strlen(name);
+
+	if (strncmp(arg, name, n) != 0) {
+		return nullptr;
 	}
-	while (*arg == ' ') {
-		arg++;
+	if (arg[n] != '\0' && arg[n] != ' ') {
+		return nullptr;
 	}
-	if (*arg < '0' || *arg > '9') {
-		return 0;
+	return arg + n;
+}
+
+/*
+ * Parse the optional trailing page index. False when the tail is neither empty
+ * nor a plain number, so `hw board xyz` reaches the usage string rather than
+ * being silently treated as `hw board`.
+ *
+ * Unsigned end to end, and clamped rather than wrapped: an index parsed
+ * unsigned and then rendered signed is what emits an unresumable "next:-1".
+ */
+bool parse_tail(const char *rest, unsigned *start)
+{
+	*start = 0;
+
+	while (*rest == ' ') {
+		rest++;
 	}
-	unsigned long v = strtoul(arg, nullptr, 10);
-	return (v > 9999U) ? 9999U : (unsigned)v;
+	if (*rest == '\0') {
+		return true;
+	}
+	if (*rest < '0' || *rest > '9') {
+		return false;
+	}
+
+	char *end = nullptr;
+	unsigned long v = strtoul(rest, &end, 10);
+
+	while (end != nullptr && *end == ' ') {
+		end++;
+	}
+	if (end != nullptr && *end != '\0') {
+		return false;
+	}
+
+	*start = (v > 9999UL) ? 9999U : (unsigned)v;
+	return true;
 }
 
 } /* namespace */
@@ -501,30 +561,34 @@ void handle(const char *command, char *reply, size_t cap, bool local,
 	}
 
 	Sink s;
+	const char *rest;
+	unsigned start = 0;
 
+	/* Each arm must match a whole word AND carry a valid tail; a branch that
+	 * matches the word but not the tail falls through to the usage string. */
 	if (*arg == '\0') {
 		sink_init(&s, reply, cap, 0);
 		section_summary(&s, board, callbacks);
-	} else if (memcmp(arg, "board", 5) == 0) {
-		sink_init(&s, reply, cap, parse_start(arg + 5));
+	} else if ((rest = match_word(arg, "board")) && parse_tail(rest, &start)) {
+		sink_init(&s, reply, cap, start);
 		section_board(&s, board, callbacks);
-	} else if (memcmp(arg, "rtc", 3) == 0) {
-		sink_init(&s, reply, cap, parse_start(arg + 3));
+	} else if ((rest = match_word(arg, "rtc")) && parse_tail(rest, &start)) {
+		sink_init(&s, reply, cap, start);
 		section_rtc(&s, rtc);
-	} else if (memcmp(arg, "i2c scan", 8) == 0) {
-		sink_init(&s, reply, cap, parse_start(arg + 8));
+	} else if ((rest = match_word(arg, "i2c scan")) && parse_tail(rest, &start)) {
+		sink_init(&s, reply, cap, start);
 		section_i2c_scan(&s);
-	} else if (memcmp(arg, "i2c", 3) == 0) {
-		sink_init(&s, reply, cap, parse_start(arg + 3));
+	} else if ((rest = match_word(arg, "i2c")) && parse_tail(rest, &start)) {
+		sink_init(&s, reply, cap, start);
 		section_i2c(&s);
-	} else if (memcmp(arg, "gps", 3) == 0) {
-		sink_init(&s, reply, cap, parse_start(arg + 3));
+	} else if ((rest = match_word(arg, "gps")) && parse_tail(rest, &start)) {
+		sink_init(&s, reply, cap, start);
 		section_gps(&s, callbacks);
-	} else if (memcmp(arg, "sensors", 7) == 0) {
-		sink_init(&s, reply, cap, parse_start(arg + 7));
+	} else if ((rest = match_word(arg, "sensors")) && parse_tail(rest, &start)) {
+		sink_init(&s, reply, cap, start);
 		section_sensors(&s);
-	} else if (memcmp(arg, "all", 3) == 0) {
-		sink_init(&s, reply, cap, parse_start(arg + 3));
+	} else if ((rest = match_word(arg, "all")) && parse_tail(rest, &start)) {
+		sink_init(&s, reply, cap, start);
 		section_board(&s, board, callbacks);
 		section_rtc(&s, rtc);
 		section_i2c(&s);
