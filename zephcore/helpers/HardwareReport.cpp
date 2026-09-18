@@ -420,28 +420,52 @@ void section_i2c_scan(Sink *s)
 				continue;
 			}
 			found++;
+
 			const char *nm = declared_name_at(bus->name, addr);
-			int w = snprintf(line + used, sizeof(line) - used,
-					 nm ? " 0x%02x(%s)" : " 0x%02x", addr, nm);
-			if (w < 0 || (size_t)(used + w) >= sizeof(line)) {
-				/* This address did not fit. Flush the line so far,
-				 * start a continuation, and re-render the address
-				 * into it. Dropping it would silently omit a chip
-				 * that is physically present, which is the one
-				 * thing a bus scan must never do. */
+
+			/* Render the token on its own first, so the decision to
+			 * wrap is made against a known length and an address can
+			 * never fall between the two branches. The previous shape
+			 * -- format into the line, retry once on a fresh line,
+			 * and do nothing if that also failed -- dropped the
+			 * address while found++ had already counted it, so the
+			 * total and the listing disagreed. */
+			char tok[72];
+			int tw = nm ? snprintf(tok, sizeof(tok), " 0x%02x(%s)", addr, nm)
+				    : snprintf(tok, sizeof(tok), " 0x%02x", addr);
+
+			if (tw < 0 || (size_t)tw >= sizeof(tok)) {
+				/* Annotation too long for the token buffer. The
+				 * address is the part that matters; keep it and
+				 * lose the name. */
+				tw = snprintf(tok, sizeof(tok), " 0x%02x", addr);
+				if (tw < 0) {
+					continue;
+				}
+			}
+
+			size_t toklen = (size_t)tw;
+
+			if ((size_t)used + toklen >= sizeof(line)) {
+				/* Wrap: flush what we have and restart the line. */
 				line[used] = '\0';
 				sink_line(s, "%s", line);
 				used = snprintf(line, sizeof(line), "%s:", bus->name);
 				if (used < 0 || (size_t)used >= sizeof(line)) {
 					break;
 				}
-				w = snprintf(line + used, sizeof(line) - used,
-					     nm ? " 0x%02x(%s)" : " 0x%02x", addr, nm);
-				if (w > 0 && (size_t)(used + w) < sizeof(line)) {
-					used += w;
-				}
+			}
+
+			if ((size_t)used + toklen < sizeof(line)) {
+				memcpy(line + used, tok, toklen + 1);
+				used += (int)toklen;
 			} else {
-				used += w;
+				/* Even a fresh line cannot hold it, which needs a
+				 * bus name nearly as long as the buffer. Give the
+				 * address a line of its own rather than dropping a
+				 * chip that is physically present -- the one thing
+				 * a bus scan must never do. */
+				sink_line(s, "%s", tok);
 			}
 		}
 
