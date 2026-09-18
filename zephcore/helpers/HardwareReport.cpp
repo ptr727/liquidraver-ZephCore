@@ -47,13 +47,14 @@ namespace {
 /*
  * Largest page index the marker can carry and the parser will accept.
  *
- * " next:" plus a NUL leaves 5 digits inside HW_NEXT_RESERVE, so 99999 is the
- * format's ceiling; the parser's own clamp has to match whatever the emitter
- * can produce, or a page could advertise an index that feeding it back
- * silently rewrites -- paging the same lines forever. Both sides use this
- * constant so they cannot drift apart.
+ * Set by what the marker format holds: " next:" is 6 characters, so
+ * HW_NEXT_RESERVE (12) leaves 5 digits plus the NUL -- " next:99999" is
+ * exactly 11 characters. The emitter clamps to this rather than letting
+ * snprintf cut digits, and the parser accepts up to the same value, because a
+ * page that advertises an index the parser then silently rewrites pages the
+ * same lines forever. One constant, so the two cannot drift apart.
  */
-#define HW_PAGE_INDEX_MAX 9999U
+#define HW_PAGE_INDEX_MAX 99999U
 
 /*
  * Paged line sink.
