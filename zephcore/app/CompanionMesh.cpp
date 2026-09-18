@@ -3791,11 +3791,25 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 				strcpy(reply, "Unknown command");
 			}
 
-			/* A CommonCLI reply can be longer than one companion frame and the
-			 * app protocol has no continuation for this response, so truncate
-			 * rather than drop. */
+			/* A CommonCLI reply can be longer than one companion frame and
+			 * the app protocol has no continuation for this response, so
+			 * truncate rather than drop -- but SAY SO.
+			 *
+			 * The CLI buffer is COMPANION_CLI_REPLY_SIZE (256) while a frame
+			 * carries MAX_FRAME_SIZE-1 (175), so a reply between those two
+			 * sizes used to arrive silently missing its tail. That reads as a
+			 * complete answer and is indistinguishable from one: `hw board`
+			 * ended mid-word at "(none reported" with its last line simply
+			 * absent. A reader cannot tell a short answer from a cut one, so
+			 * the cut is now marked. */
 			size_t rlen = strlen(reply);
-			if (rlen > MAX_FRAME_SIZE - 1) rlen = MAX_FRAME_SIZE - 1;
+			if (rlen > MAX_FRAME_SIZE - 1) {
+				const char kCut[] = "...";
+				const size_t kCutLen = sizeof(kCut) - 1;
+
+				rlen = MAX_FRAME_SIZE - 1;
+				memcpy(reply + rlen - kCutLen, kCut, kCutLen);
+			}
 			writeFrame(rsp, rlen + 1);
 		} else {
 			sendPacketError(ERR_ILLEGAL_ARG);

@@ -192,6 +192,24 @@
 	};
 
 	#include "../../common/sensors-i2c.dtsi"
+
+	/*
+	 * WisBlock slots can carry a RAK12002 (RV3028 at 0x52), so opt in to
+	 * boot-time time restore. The descriptors are data-only and probed by
+	 * raw I2C, so a board with no RTC module fitted simply fails the probe
+	 * and is skipped -- nothing is bound and nothing is reported present.
+	 *
+	 * Safe on this board specifically: the RTC addresses (0x68/0x51/0x52/
+	 * 0x32) do not collide with anything declared here. The WisBlock sensor
+	 * slots use 0x38/0x40/0x44/0x5c/0x70/0x76/0x77 and the OLED is 0x3c.
+	 *
+	 * 0x68 is shared with MPU-class IMUs, including the RAK1905. That is
+	 * not a devicetree clash (nothing declares 0x68 here), and the
+	 * discovery probe rejects a chip whose time registers are not valid
+	 * BCD, which is exactly the case that check exists for -- an IMU is
+	 * never adopted as a write-back target.
+	 */
+	#include "../../common/rtc-i2c.dtsi"
 };
 
 /* RAK4631 has BME680, not BME280 — override the common DTSI default */
