@@ -44,8 +44,8 @@
 #include <espressif/partitions_0x0_amp_16M.dtsi>
 
 / {
-	model = "Heltec WiFi LoRa 32 V4.3 PROCPU";
-	compatible = "heltec,wifi-lora32-v4_3";
+	model = "Heltec WiFi LoRa 32 V4-R8 PROCPU";
+	compatible = "heltec,wifi-lora32-v4-r8";
 
 	aliases {
 		led0 = &led0;

@@ -54,6 +54,7 @@ namespace {
  */
 struct Sink {
 	char *buf;
+	size_t buf_cap; /* the caller's actual buffer size */
 	size_t cap;     /* usable capacity, already excluding HW_NEXT_RESERVE */
 	size_t len;
 	unsigned first; /* first line index to emit */
@@ -65,6 +66,9 @@ struct Sink {
 void sink_init(Sink *s, char *buf, size_t cap, unsigned first)
 {
 	s->buf = buf;
+	/* Remember the caller's real capacity: cap below is the reduced write
+	 * limit, and sink_finish() must not assume the difference exists. */
+	s->buf_cap = cap;
 	s->cap = (cap > HW_NEXT_RESERVE) ? cap - HW_NEXT_RESERVE : 1;
 	s->len = 0;
 	s->first = first;
@@ -112,8 +116,21 @@ void sink_finish(Sink *s)
 	if (!s->full) {
 		return;
 	}
-	/* cap excluded HW_NEXT_RESERVE, so this always fits. */
-	snprintf(s->buf + s->len, HW_NEXT_RESERVE, " next:%u", s->next);
+
+	/* Normally cap excluded HW_NEXT_RESERVE so the marker fits, but a caller
+	 * passing cap <= HW_NEXT_RESERVE gets no reserve at all -- sink_init()
+	 * clamps cap to 1 there. Bound the write by what the buffer actually has
+	 * rather than by the reserve we hoped for; no current caller is that
+	 * small, and this is a reporting path that must not be the thing that
+	 * overruns a reply buffer. */
+	if (s->len >= s->buf_cap) {
+		return;
+	}
+	size_t room = s->buf_cap - s->len;
+	if (room > HW_NEXT_RESERVE) {
+		room = HW_NEXT_RESERVE;
+	}
+	snprintf(s->buf + s->len, room, " next:%u", s->next);
 }
 
 /* ================= devicetree I2C inventory =================
@@ -364,12 +381,26 @@ void section_i2c_scan(Sink *s)
 		char line[128];
 		int used = snprintf(line, sizeof(line), "%s:", bus->name);
 
+		/* A bus name long enough to fill the buffer would make every
+		 * `line + used` below out of bounds. Not reachable with today's
+		 * devicetree names, which is exactly why it needs checking here
+		 * rather than being assumed. */
+		if (used < 0 || (size_t)used >= sizeof(line)) {
+			sink_line(s, "%s: name too long to scan", bus->name);
+			continue;
+		}
+
 		/* 0x08-0x77: the 7-bit range excluding the reserved low and
 		 * high blocks. A zero-length write is the standard probe -- it
 		 * addresses the device and stops, so a chip that would react to
 		 * a read of register 0 is not disturbed. */
+		/* Zero-length write is the standard probe, but hand it a real
+		 * pointer: i2c_write() puts buf straight into i2c_msg.buf and
+		 * some controller drivers assert on NULL before looking at len. */
+		uint8_t probe = 0;
+
 		for (uint16_t addr = 0x08; addr <= 0x77; addr++) {
-			if (i2c_write(bus, nullptr, 0, addr) != 0) {
+			if (i2c_write(bus, &probe, 0, addr) != 0) {
 				continue;
 			}
 			found++;
@@ -385,6 +416,9 @@ void section_i2c_scan(Sink *s)
 				line[used] = '\0';
 				sink_line(s, "%s", line);
 				used = snprintf(line, sizeof(line), "%s:", bus->name);
+				if (used < 0 || (size_t)used >= sizeof(line)) {
+					break;
+				}
 				w = snprintf(line + used, sizeof(line) - used,
 					     nm ? " 0x%02x(%s)" : " 0x%02x", addr, nm);
 				if (w > 0 && (size_t)(used + w) < sizeof(line)) {
@@ -504,11 +538,16 @@ void section_summary(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 
 	sink_line(s, "i2c %u declared", (unsigned)i2c_decl_count());
 
+	/* Always emitted, including when unsupported: the docs pin the summary's
+	 * field list, and a line that silently disappears on some platforms makes
+	 * the schema depend on the board. */
 	uint32_t cause;
 	if (zephcore_boot_reset_cause(&cause)) {
 		char causes[96];
 		zephcore_boot_reset_cause_str(causes, sizeof(causes));
 		sink_line(s, "reset%s", causes[0] ? causes : " none");
+	} else {
+		sink_line(s, "reset not supported");
 	}
 	(void)board;
 }
