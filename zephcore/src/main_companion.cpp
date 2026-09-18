@@ -1379,12 +1379,10 @@ int main(void)
 	 * reason appended further below. */
 	char boot_cause_msg[160];
 	boot_cause_msg[0] = '\0';
-	/* Function scope on purpose: with deferred logging a %s argument is read
-	 * when the message is processed, which is after any inner block would
-	 * have ended. Board builds are deferred; only native_sim is immediate. */
-	char boot_cause_labels[112];
 	{
 		uint32_t cause;
+		/* Holds every label the renderer can emit, space-prefixed, plus NUL. */
+		char boot_cause_labels[112];
 		/* Captured at POST_KERNEL by helpers/boot_info.c, which also did the
 		 * clearing this block used to do. Reading the captured copy rather
 		 * than the register is what lets a later diagnostic or CLI report
@@ -1394,7 +1392,10 @@ int main(void)
 			 * list here would drift from it, and the one it replaced had
 			 * already drifted: it knew six bits of the fifteen the renderer
 			 * labels, so a DEBUG, SECURITY, CLOCK or TEMPERATURE reset
-			 * logged as bare hex and raised no notice at all. */
+			 * logged as bare hex and raised no notice at all. The trade is
+			 * that the notice loses the plain-English hints the local copy
+			 * carried: it now reads "PIN" and "POR" rather than
+			 * "PIN(reset button)" and "POR(power-on)". */
 			int n = zephcore_boot_reset_cause_str(boot_cause_labels,
 							      sizeof(boot_cause_labels));
 
@@ -1412,14 +1413,20 @@ int main(void)
 			 * has no label for, which is the same "nothing worth saying"
 			 * the old explicit bit test meant.
 			 *
-			 * Two causes are labelled but not worth a chat message on
-			 * their own. A wake from a deliberate low-power shutdown says
-			 * less than the "Last shutdown" line appended below, and a
-			 * debugger-initiated reset is the developer's own doing. Both
-			 * still render in the log line and in the notice when some
-			 * other cause raised it, so nothing is hidden -- this decides
-			 * only whether to speak unprompted. */
-			const uint32_t quiet = RESET_LOW_POWER_WAKE | RESET_DEBUG;
+			 * A debugger-initiated reset is the developer's own doing and
+			 * is not worth a chat message on its own. It still renders in
+			 * the log line, and in the notice when another cause raised
+			 * one, so nothing is hidden -- this decides only whether to
+			 * speak unprompted.
+			 *
+			 * RESET_LOW_POWER_WAKE is deliberately NOT quiet, although on
+			 * nRF it is a routine System OFF wake that the "Last shutdown"
+			 * line below already explains. The bit does not mean the same
+			 * thing everywhere: on STM32 it comes from LPWRRSTF, a fault
+			 * raised by an illegal Stop/Standby entry, so silencing it
+			 * would hide a real defect on lora_e5_mini to save one
+			 * redundant word on nRF. */
+			const uint32_t quiet = RESET_DEBUG;
 
 			if (n > 0 && (cause & ~quiet) != 0) {
 				snprintf(boot_cause_msg, sizeof(boot_cause_msg),

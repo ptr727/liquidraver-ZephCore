@@ -12,11 +12,13 @@
  *   - Whoever clears it destroys the fact for every later reader. The
  *     companion used to read and clear it in main(), so by the time a CLI
  *     command asked, the cause was gone and the honest answer was 0.
- *   - Whoever never clears it reports stale bits. The repeater and room
- *     server never touched the register, so a board reset by the watchdog
- *     once reported WATCHDOG on every boot thereafter. Which bits a given
- *     SoC can report is its own business -- nRF52840, for one, never
- *     reports BROWNOUT at all -- but whatever it does latch accumulates.
+ *   - Whoever never clears it reports stale bits, on the SoCs that latch
+ *     them. The repeater and room server never touched the register, so on
+ *     nRF, EFR32 and STM32 a board reset by the watchdog once reported
+ *     WATCHDOG on every boot thereafter. Which bits a given SoC reports is
+ *     its own business -- nRF52840 never reports BROWNOUT at all -- and
+ *     ESP32 neither accumulates nor implements a clear, reporting one
+ *     reason per boot, so there this is uniformity rather than a fix.
  *
  * This captures the cause once at POST_KERNEL, before main() runs on any
  * role, then clears the register so the next boot starts clean. Every reader
@@ -41,10 +43,11 @@ extern "C" {
  * reported no known cause) and is reported differently.
  *
  * Call this from main() or later. The capture runs as a SYS_INIT hook at
- * POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, so a caller running before
- * that -- PRE_KERNEL_1 or _2, or POST_KERNEL at an equal or lower priority
- * value, where link order decides and nothing enforces it -- gets false and
- * cannot tell that apart from a platform that cannot report a cause at all.
+ * POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, so an earlier caller gets
+ * false and cannot tell that apart from a platform that cannot report a cause
+ * at all. Earlier means PRE_KERNEL_1 or _2, or POST_KERNEL at a numerically
+ * lower priority value, which run before the capture deterministically; at the
+ * same priority value link order decides and nothing enforces it.
  */
 bool zephcore_boot_reset_cause(uint32_t *out);
 
