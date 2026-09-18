@@ -55,6 +55,7 @@ station_g2/esp32s3/procpu
 heltec_wifi_lora32_v3/esp32s3/procpu
 heltec_wifi_lora32_v4/esp32s3/procpu
 heltec_wifi_lora32_v43/esp32s3/procpu
+heltec_wifi_lora32_v4_r8/esp32s3/procpu
 heltec_wireless_tracker/esp32s3/procpu
 heltec_wireless_tracker_v2/esp32s3/procpu
 thinknode_m9/esp32s3/procpu
@@ -65,6 +66,17 @@ ttgo_lora32/esp32/procpu   # source-only, no published firmware
 > ESP32 boards require `west blobs fetch hal_espressif` before first build.
 >
 > Heltec V3 console/shell use `uart0` (UART serial) in ZephCore.
+
+> **Heltec WiFi LoRa 32 V4-R8** (`heltec_wifi_lora32_v4_r8/esp32s3/procpu`): the "R8" is the
+> SoC part — **ESP32-S3R8, 8 MB octal PSRAM**, where the plain V4 is an S3R2 with 2 MB quad.
+> Octal PSRAM consumes GPIO33–37, and that one fact explains every pin move on this revision:
+> Vext_Ctrl GPIO36→**40**, LED GPIO35→**46**, VGNSS_Ctrl GPIO34→**42**, while ADC_Ctrl (GPIO37)
+> and GNSS_RST (GPIO42, reused) are **removed**. The FEM is KCT8103L with CTX on GPIO5, as on
+> V4.3. Verified against the vendor pinmap at <https://heltec.org/project/wifi-lora-32-v4/>.
+>
+> **Do not flash `heltec_wifi_lora32_v4` or `_v43` to an R8**: Vext would be driven on GPIO36
+> instead of GPIO40, so the rail feeding the OLED and sensors never switches, and GPIO37 would
+> be driven as an ADC enable this revision does not have.
 >
 > **Heltec Wireless Tracker** (`heltec_wireless_tracker/esp32s3/procpu`): V1.1
 > ESP32-S3-FN8 companion with SX1262, ST7735R 160x80 TFT, and UC6580 GPS.
