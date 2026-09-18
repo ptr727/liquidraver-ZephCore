@@ -1423,29 +1423,12 @@ int main(void)
 			 * cause raised one, so nothing is hidden -- this decides only
 			 * whether to speak unprompted.
 			 *
-			 * RESET_LOW_POWER_WAKE does not mean the same thing on every
-			 * SoC, which is why it is conditional. On nRF, ESP32 and EFR32
-			 * it is a wake from a shutdown the user asked for, and the
-			 * ordinary power-off path persists no shutdown reason, so
-			 * announcing it would put an unexplained "Restarted: LOWPOWER"
-			 * in the chat after every power cycle. On STM32 the bit comes
-			 * from LPWRRSTF, a fault raised by an illegal Stop/Standby
-			 * entry -- and the standby-wake mapping that would give it the
-			 * other meaning is STM32H7-only, so on lora_e5_mini a fault is
-			 * all it can be. Silencing it there would hide a real defect
-			 * on a node whose serial log nobody is watching.
-			 *
-			 * The test names the families where the bit is known to mean a
-			 * deliberate wake, rather than the ones where it means a fault,
-			 * so a family nobody has checked reports the cause instead of
-			 * being silenced by omission. */
-#if defined(CONFIG_SOC_FAMILY_NORDIC_NRF) || \
-	defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32) || \
-	defined(CONFIG_SOC_FAMILY_SILABS_S2)
+			 * A wake from a low-power shutdown is one the user asked
+			 * for: the button power-off persists no reason, so announcing
+			 * the wake would put an unexplained "Restarted: LOWPOWER" in
+			 * the chat after every power cycle. The low-battery shutdown
+			 * does persist a reason, and it is folded in further below. */
 			const uint32_t quiet = RESET_LOW_POWER_WAKE | RESET_DEBUG;
-#else
-			const uint32_t quiet = RESET_DEBUG;
-#endif
 
 			if (n > 0 && (cause & ~quiet) != 0) {
 				snprintf(boot_cause_msg, sizeof(boot_cause_msg),
