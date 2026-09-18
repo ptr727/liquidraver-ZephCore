@@ -45,6 +45,17 @@ namespace {
 #define HW_NEXT_RESERVE 12
 
 /*
+ * Largest page index the marker can carry and the parser will accept.
+ *
+ * " next:" plus a NUL leaves 5 digits inside HW_NEXT_RESERVE, so 99999 is the
+ * format's ceiling; the parser's own clamp has to match whatever the emitter
+ * can produce, or a page could advertise an index that feeding it back
+ * silently rewrites -- paging the same lines forever. Both sides use this
+ * constant so they cannot drift apart.
+ */
+#define HW_PAGE_INDEX_MAX 9999U
+
+/*
  * Paged line sink.
  *
  * Every section writes through this, so `hw all` and a single subcommand page
@@ -98,7 +109,11 @@ void sink_line(Sink *s, const char *fmt, ...)
 	size_t need = strlen(line) + (s->len ? 1 : 0);
 	if (s->len + need >= s->cap) {
 		s->full = true;
-		s->next = idx;
+		/* Clamp rather than let snprintf truncate the digits: a cut
+		 * number is a plausible-looking index pointing somewhere else.
+		 * No section emits anywhere near this many lines, which is why
+		 * this is about provability rather than a reachable bug. */
+		s->next = (idx > HW_PAGE_INDEX_MAX) ? HW_PAGE_INDEX_MAX : idx;
 		return;
 	}
 
@@ -526,6 +541,13 @@ void section_summary(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 		sink_line(s, "rtc %s", active.name);
 	} else if (zephcore_rtc_declared() == 0) {
 		sink_line(s, "rtc none declared");
+	} else if (!zephcore_rtc_probed()) {
+		/* zephcore_rtc_active() is false both for "probed, none found"
+		 * and "not probed yet". Collapsing those into "none present"
+		 * states a fact discovery never established -- the distinction
+		 * `hw rtc` keeps, and a summary has no licence to be looser
+		 * about it than the section it summarises. */
+		sink_line(s, "rtc not yet probed");
 	} else {
 		sink_line(s, "rtc none present");
 	}
@@ -606,7 +628,7 @@ bool parse_tail(const char *rest, unsigned *start)
 		return false;
 	}
 
-	*start = (v > 9999UL) ? 9999U : (unsigned)v;
+	*start = (v > HW_PAGE_INDEX_MAX) ? HW_PAGE_INDEX_MAX : (unsigned)v;
 	return true;
 }
 
