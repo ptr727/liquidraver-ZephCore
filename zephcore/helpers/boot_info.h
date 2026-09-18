@@ -40,9 +40,17 @@ extern "C" {
 bool zephcore_boot_reset_cause(uint32_t *out);
 
 /*
- * Render the cause as space-prefixed labels, e.g. " PIN SOFTWARE". Writes ""
- * when the cause is 0 or carries only bits this build has no label for.
- * Returns the number of characters written, excluding the NUL.
+ * Render the cause as space-prefixed labels, e.g. " PIN SOFTWARE". Returns the
+ * number of characters written, excluding the NUL.
+ *
+ * Writes "" and returns 0 in three cases the string alone cannot tell apart:
+ * the platform has no reset-cause support, the chip reported a cause of 0, or
+ * the cause carries only bits this build has no label for. A caller that needs
+ * to distinguish the first from the other two asks zephcore_boot_reset_cause(),
+ * which returns false only in that case.
+ *
+ * A label that would not fit in cap is dropped rather than cut, so the result
+ * is always a whole number of labels and the return value counts only those.
  */
 int zephcore_boot_reset_cause_str(char *buf, size_t cap);
 
