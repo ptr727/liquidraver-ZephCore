@@ -89,12 +89,21 @@
 
 	/* Vext rail switch — PMOS, ACTIVE LOW (GPIO40 low = rail ON).
 	 * Powers the OLED (incl. its I2C pull-ups) and the expansion header.
-	 * Same rail circuit as V4.2 (only the PA differs on V4.3); verified on V4
-	 * hardware that GPIO40 high leaves the rail floating (~1.6 V) and the OLED
-	 * unpowered, while low gives a clean 3.3 V. Confirmed against Arduino
-	 * MeshCore: RefCountedDigitalPin::begin() drives PIN_VEXT_EN to !active
-	 * (LOW) and the V4 OLED build constructs the display with NULL periph_power,
-	 * so GPIO40 is held LOW continuously there too.
+	 *
+	 * Same rail circuit as V4.2/V4.3, moved from GPIO36 to GPIO40 by the
+	 * octal-PSRAM pin reshuffle (GPIO33-37 are the PSRAM pads on an S3R8).
+	 *
+	 * Arduino MeshCore drives this revision the same way, and unlike the plain
+	 * V4 it actually asserts the pin: variants/heltec_v4_r8 sets PIN_VEXT_EN=40
+	 * with PIN_VEXT_EN_ACTIVE=LOW, and its target.cpp constructs the display
+	 * with &board.periph_power, so RefCountedDigitalPin::claim() drives the pin
+	 * to the active level. (The plain V4 passes NULL there, so its pin only ever
+	 * sits at the !active level begin() set -- which is why its ACTIVE=HIGH
+	 * constant never shows up as a difference.)
+	 *
+	 * Confirmed on hardware here: with this regulator holding GPIO40 low, the
+	 * SSD1306 acknowledges at 0x3c, which it cannot do on an unpowered rail.
+	 *
 	 * regulator-boot-on + always-on: the rail comes up at regulator init,
 	 * well before the SSD1306 driver init. */
 	vext_enable: vext-enable {

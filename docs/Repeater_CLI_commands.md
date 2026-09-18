@@ -44,7 +44,7 @@ it is available on **all four roles** — companion, repeater, room server and o
 
 | Command | Description |
 |---------|-------------|
-| `hw` | Summary. Emits exactly these fields, one per line: board target and SoC, `fw`/`role`, `rtc` (the clock source), `gnss`, `i2c` count, `reset` |
+| `hw` | Summary. Emits exactly these fields, one per line: `<board> (<soc>)` — the short board name and SoC, not the full board target — then `fw`/`role`, `rtc` (the clock source), `gnss`, `i2c` count, `reset` |
 | `hw board [start]` | `board`, `name`, `soc`, `zephyr`, `fw`, `role`, `bootloader` (when the board can report one), `reset`, `devid` |
 | `hw rtc [start]` | Declared I2C RTC candidates and the boot probe's outcome for each |
 | `hw i2c [start]` | Devicetree-declared I2C inventory. **Not a bus scan** — no bus traffic |

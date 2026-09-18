@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: MIT
- * Heltec WiFi LoRa 32 V4.3 — ZephCore overlay
+ * Heltec WiFi LoRa 32 V4-R8 — ZephCore overlay
  *
  * The DTS already defines: SX1262 (lora0), SSD1306 OLED, button, LED, PWM,
  * vext_enable, fem_power, I2C0, SPI2, BLE, WiFi.
