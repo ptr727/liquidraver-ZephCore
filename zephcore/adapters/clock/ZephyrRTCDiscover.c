@@ -13,6 +13,7 @@
 #include "ZephyrRTCDiscover.h"
 
 #include <zephyr/kernel.h>
+#include <string.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/logging/log.h>
@@ -119,6 +120,13 @@ static bool rtc_time_unreliable(const struct rtc_desc *d, const uint8_t blk[7])
  * chip holds a sane time, return it via epoch_out. */
 static bool rtc_probe(uint32_t *epoch_out)
 {
+	/* Clear last run's outcomes. rtc_probe() can run more than once -- 
+	 * zephcore_rtc_save() probes if restore never ran -- and it returns
+	 * early once a chip holds a valid time. Without this reset, candidates
+	 * the later run never reached would keep the previous run's PRESENT or
+	 * ABSENT, which is precisely the stale claim UNPROBED exists to avoid. */
+	memset(s_state, ZEPHCORE_RTC_UNPROBED, sizeof(s_state));
+
 	for (size_t i = 0; i < ARRAY_SIZE(rtc_descs); i++) {
 		const struct rtc_desc *d = &rtc_descs[i];
 		uint8_t blk[7];
