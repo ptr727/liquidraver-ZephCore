@@ -133,9 +133,23 @@ struct I2cDecl {
 	uint16_t addr;
 };
 
+/*
+ * The bus string must be DEVICE_DT_NAME, not DT_NODE_FULL_NAME.
+ *
+ * Zephyr derives a device's runtime name as DT_PROP_OR(node, label,
+ * DT_NODE_FULL_NAME(node)), and the live scan and the RTC section both report
+ * `dev->name`. A bus node carrying a `label` would therefore print one string
+ * in `hw i2c` and a different one in `hw i2c scan` and `hw rtc`, and
+ * declared_name_at() -- which matches the two by string -- would silently stop
+ * annotating scanned addresses.
+ *
+ * No board in this tree labels an I2C node today, so the two derivations agree
+ * and the bug is invisible on current hardware. Using the same derivation
+ * Zephyr does keeps it that way by construction rather than by luck.
+ */
 #define HW_I2C_ENTRY(node_id)                                    \
 	{                                                        \
-		DT_NODE_FULL_NAME(DT_BUS(node_id)),              \
+		DEVICE_DT_NAME(DT_BUS(node_id)),                 \
 		DT_NODE_FULL_NAME(node_id),                      \
 		DT_PROP_BY_IDX(node_id, compatible, 0),          \
 		(uint16_t)DT_REG_ADDR(node_id),                  \
