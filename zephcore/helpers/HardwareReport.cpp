@@ -384,11 +384,18 @@ void section_gps(Sink *s, CommonCLICallbacks *cb)
 	sink_line(s, "  baud %u",
 		  (unsigned)DT_PROP(DT_PARENT(DT_NODELABEL(gnss)), current_speed));
 #endif
-	/* The driver's own compatible is the only honest model statement. A
-	 * board overlay comment naming a part is documentation, not detection:
-	 * the rak4631 overlay documents a u-blox MAX-7Q, binds
-	 * gnss-nmea-generic, and drives whatever NMEA receiver is fitted. */
-	sink_line(s, "  model: not identified (generic NMEA)");
+	/* The bound driver's compatible, printed above, is the only honest model
+	 * statement. A board overlay comment naming a part is documentation, not
+	 * detection: the rak4631 overlay documents a u-blox MAX-7Q, binds
+	 * gnss-nmea-generic, and drives whatever NMEA receiver is fitted.
+	 *
+	 * Only the generic NMEA driver leaves the model genuinely unknown -- it
+	 * parses any NMEA talker and names no part. A specific driver IS the
+	 * model, so adding an "unidentified" line there would contradict the
+	 * compatible printed directly above it. */
+#if DT_NODE_HAS_COMPAT(DT_NODELABEL(gnss), gnss_nmea_generic)
+	sink_line(s, "  model: not identified (generic NMEA driver)");
+#endif
 #else
 	sink_line(s, "gnss: none declared in devicetree");
 #endif

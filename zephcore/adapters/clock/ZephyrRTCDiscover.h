@@ -49,11 +49,14 @@ void zephcore_rtc_save(uint32_t epoch);
  *
  * They report only what discovery actually established. The probe loop stops
  * at the first chip holding a valid time, so candidates after it are never
- * reached -- those report UNPROBED rather than being reported as absent.
+ * reached -- those report UNPROBED rather than being reported as absent. A
+ * candidate whose I2C bus was not ready reports UNPROBED for the same reason:
+ * a probe that could not run is not evidence that the chip is missing.
  */
 
 enum zephcore_rtc_state {
-	ZEPHCORE_RTC_UNPROBED = 0, /* discovery stopped before reaching it */
+	ZEPHCORE_RTC_UNPROBED = 0, /* not probed: discovery stopped before
+				    * reaching it, or its bus was not ready */
 	ZEPHCORE_RTC_ABSENT,       /* no ACK, or a non-RTC chip sharing the address */
 	ZEPHCORE_RTC_PRESENT,      /* an RTC answered and was accepted as one */
 };

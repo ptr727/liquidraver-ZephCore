@@ -44,8 +44,8 @@ it is available on **all four roles** — companion, repeater, room server and o
 
 | Command | Description |
 |---------|-------------|
-| `hw` | Summary: board target, SoC, firmware, role, clock source, GNSS, I2C count, reset cause |
-| `hw board [start]` | Board target, SoC, Zephyr version, firmware and build date, role, bootloader, reset cause, device id |
+| `hw` | Summary. Emits exactly these fields, one per line: board target and SoC, `fw`/`role`, `rtc` (the clock source), `gnss`, `i2c` count, `reset` |
+| `hw board [start]` | `board`, `name`, `soc`, `zephyr`, `fw`, `role`, `bootloader` (when the board can report one), `reset`, `devid` |
 | `hw rtc [start]` | Declared I2C RTC candidates and the boot probe's outcome for each |
 | `hw i2c [start]` | Devicetree-declared I2C inventory. **Not a bus scan** — no bus traffic |
 | `hw i2c scan [start]` | Live scan of 0x08–0x77 on every enabled bus, naming declared addresses |
@@ -55,6 +55,10 @@ it is available on **all four roles** — companion, repeater, room server and o
 | `hw <anything else>` | Usage string |
 
 `start` is an optional line index for resuming a truncated reply (see **Paging** below).
+
+**Radio parameters are not reported here.** `get freq`, `get sf`, `get bw`, `get tx` and the
+`stats-radio` family already cover them. Duplicating a live setting in a second place is how the
+two drift apart.
 
 ### `hw i2c` and `hw i2c scan` answer different questions
 

@@ -124,7 +124,10 @@ static bool rtc_probe(uint32_t *epoch_out)
 		uint8_t blk[7];
 
 		if (!device_is_ready(d->bus)) {
-			s_state[i] = ZEPHCORE_RTC_ABSENT;
+			/* The probe could not run, which is not evidence the chip
+			 * is missing. Leave the state UNPROBED: claiming ABSENT
+			 * here would report "no RTC present" for a board whose I2C
+			 * driver merely failed to initialise. */
 			continue;
 		}
 		if (i2c_burst_read(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) != 0) {

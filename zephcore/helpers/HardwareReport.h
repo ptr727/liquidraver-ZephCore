@@ -4,8 +4,12 @@
  * `hw` — what this firmware is, and what hardware it actually found.
  *
  * A release build compiles every MESH_DEBUG_* call away, so the firmware knows
- * its board, MCU, radio, clock source, GNSS wiring and sensor inventory and
- * has no way to tell anyone. This formats those facts for the CLI.
+ * its board, MCU, clock source, GNSS wiring and sensor inventory and has no
+ * way to tell anyone. This formats those facts for the CLI.
+ *
+ * Radio parameters are deliberately NOT reported here: `get freq`, `get sf`
+ * and the stats-radio family already cover them, and duplicating a live
+ * setting in a second place is how the two drift apart.
  *
  * The rule every formatter here follows: report what the code KNOWS, never
  * what could be inferred. A devicetree comment naming a GNSS part is not
