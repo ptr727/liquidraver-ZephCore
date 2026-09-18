@@ -1375,14 +1375,14 @@ int main(void)
 	LOG_INF("=== ZephCore starting ===");
 
 	/* Log reset reason so we can diagnose random reboots */
-	/* Fits "Restarted:" + every label the renderer can emit + the shutdown
-	 * reason appended further below. */
-	char boot_cause_msg[160];
+	/* Fits "Restarted:" (10) + every label the renderer can emit (126) + the
+	 * shutdown reason appended further below (29) + NUL = 166. */
+	char boot_cause_msg[176];
 	boot_cause_msg[0] = '\0';
 	{
 		uint32_t cause;
-		/* Holds every label the renderer can emit, space-prefixed, plus NUL. */
-		char boot_cause_labels[112];
+		/* Every label the renderer can emit, space-prefixed: 126 + NUL. */
+		char boot_cause_labels[128];
 		/* Captured at POST_KERNEL by helpers/boot_info.c, which also did the
 		 * clearing this block used to do. Reading the captured copy rather
 		 * than the register is what lets a later diagnostic or CLI report
@@ -1391,8 +1391,8 @@ int main(void)
 			/* One renderer, shared with every other reader. A hand-rolled
 			 * list here would drift from it, and the one it replaced had
 			 * already drifted: it knew six bits of the fifteen the renderer
-			 * labels, so a DEBUG, SECURITY, CLOCK or TEMPERATURE reset
-			 * logged as bare hex and raised no notice at all. The trade is
+			 * labels, so a DEBUG, SECURITY or CLOCK reset logged as bare
+			 * hex and raised no notice at all. The trade is
 			 * that the notice loses the plain-English hints the local copy
 			 * carried: it now reads "PIN" and "POR" rather than
 			 * "PIN(reset button)" and "POR(power-on)". */
@@ -1414,19 +1414,27 @@ int main(void)
 			 * the old explicit bit test meant.
 			 *
 			 * A debugger-initiated reset is the developer's own doing and
-			 * is not worth a chat message on its own. It still renders in
-			 * the log line, and in the notice when another cause raised
-			 * one, so nothing is hidden -- this decides only whether to
-			 * speak unprompted.
+			 * is not worth a chat message on its own. A quiet cause still
+			 * renders in the log line, and in the notice when some other
+			 * cause raised one, so nothing is hidden -- this decides only
+			 * whether to speak unprompted.
 			 *
-			 * RESET_LOW_POWER_WAKE is deliberately NOT quiet, although on
-			 * nRF it is a routine System OFF wake that the "Last shutdown"
-			 * line below already explains. The bit does not mean the same
-			 * thing everywhere: on STM32 it comes from LPWRRSTF, a fault
-			 * raised by an illegal Stop/Standby entry, so silencing it
-			 * would hide a real defect on lora_e5_mini to save one
-			 * redundant word on nRF. */
+			 * RESET_LOW_POWER_WAKE does not mean the same thing on every
+			 * SoC, which is why it is conditional. On nRF, ESP32 and EFR32
+			 * it is a wake from a shutdown the user asked for, and the
+			 * ordinary power-off path persists no shutdown reason, so
+			 * announcing it would put an unexplained "Restarted: LOWPOWER"
+			 * in the chat after every power cycle. On STM32 the bit comes
+			 * from LPWRRSTF, a fault raised by an illegal Stop/Standby
+			 * entry -- and the standby-wake mapping that would give it the
+			 * other meaning is STM32H7-only, so on lora_e5_mini a fault is
+			 * all it can be. Silencing it there would hide a real defect
+			 * on a node whose serial log nobody is watching. */
+#if defined(CONFIG_SOC_FAMILY_STM32)
 			const uint32_t quiet = RESET_DEBUG;
+#else
+			const uint32_t quiet = RESET_LOW_POWER_WAKE | RESET_DEBUG;
+#endif
 
 			if (n > 0 && (cause & ~quiet) != 0) {
 				snprintf(boot_cause_msg, sizeof(boot_cause_msg),

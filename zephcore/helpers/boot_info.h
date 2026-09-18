@@ -10,8 +10,10 @@
  * reporting:
  *
  *   - Whoever clears it destroys the fact for every later reader. The
- *     companion used to read and clear it in main(), so by the time a CLI
- *     command asked, the cause was gone and the honest answer was 0.
+ *     companion used to read and clear it in main(), so any reader added
+ *     afterwards -- a CLI command, a diagnostic -- would have found the
+ *     cause gone and had no honest answer but 0. No such reader existed
+ *     yet, which is why nothing had reported it.
  *   - Whoever never clears it reports stale bits, on the SoCs that latch
  *     them. The repeater and room server never touched the register, so on
  *     nRF, EFR32 and STM32 a board reset by the watchdog once reported

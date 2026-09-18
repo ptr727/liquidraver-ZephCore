@@ -17,8 +17,9 @@ static bool s_reset_cause_valid;
 /*
  * Captured at POST_KERNEL so it runs before main() on every role, which is
  * what makes this the single reader of the register. The hwinfo reset-cause
- * path is a plain register read on every SoC that implements it, so it needs
- * no device to be ready first.
+ * path needs no device to be ready first: it is a register read on nRF and
+ * STM32, and on ESP32, EFR32 and native_sim it returns a value latched during
+ * SoC or platform init, which is earlier still.
  */
 static int boot_info_init(void)
 {
@@ -75,6 +76,8 @@ int zephcore_boot_reset_cause_str(char *buf, size_t cap)
 		{ RESET_HARDWARE,   "HARDWARE" },
 		{ RESET_USER,       "USER" },
 		{ RESET_TEMPERATURE, "TEMPERATURE" },
+		{ RESET_BOOTLOADER, "BOOTLOADER" },
+		{ RESET_FLASH,      "FLASH" },
 	};
 
 	if (buf == NULL || cap == 0) {
