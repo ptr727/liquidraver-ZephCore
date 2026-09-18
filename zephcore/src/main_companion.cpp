@@ -23,6 +23,7 @@ LOG_MODULE_REGISTER(zephcore_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #include <adapters/clock/ZephyrRTCClock.h>
 #include <adapters/clock/ZephyrRTCDiscover.h>
 #include <zephyr/bluetooth/bluetooth.h>
+#include <helpers/boot_info.h>
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/sys/reboot.h>
 #include <ZephyrSensorManager.h>
@@ -1378,7 +1379,8 @@ int main(void)
 	boot_cause_msg[0] = '\0';
 	{
 		uint32_t cause;
-		if (hwinfo_get_reset_cause(&cause) == 0) {
+		/* Captured and cleared at POST_KERNEL by helpers/boot_info.c. */
+		if (zephcore_boot_reset_cause(&cause)) {
 			LOG_INF("Reset cause: 0x%08x%s%s%s%s%s%s", cause,
 				(cause & RESET_PIN)       ? " PIN"       : "",
 				(cause & RESET_SOFTWARE)  ? " SOFTWARE"  : "",
@@ -1386,7 +1388,6 @@ int main(void)
 				(cause & RESET_POR)       ? " POR"       : "",
 				(cause & RESET_WATCHDOG)  ? " WATCHDOG"  : "",
 				(cause & RESET_CPU_LOCKUP)? " LOCKUP"    : "");
-			hwinfo_clear_reset_cause();
 			/* Every known cause becomes a v-contact message once the mesh
 			 * is up (queued below, after RTC restore + prefs load) — the
 			 * message rides the offline queue only, so the "noise" of a

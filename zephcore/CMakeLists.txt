@@ -702,6 +702,9 @@ target_sources(app PRIVATE
   adapters/sensors/ZephyrEnvSensors.cpp
   helpers/AdvertDataHelpers.cpp
   helpers/MeshTimeSync.cpp
+  # Unconditional: the clear has to run on every role, not only the one that
+  # reads the value.
+  helpers/boot_info.c
   helpers/oled_power.c
   helpers/fatal_reboot.c
   # LED master gate ("set leds on|off"). Always compiled: helpers/ui/ui_common.c
