@@ -4,6 +4,7 @@
  */
 
 #include "CommonCLI.h"
+#include "HardwareReport.h"
 #include "battery_curve.h"
 #include "led_gate.h"
 #include "buzzer_gate.h"
@@ -1470,6 +1471,14 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         }
     } else if (memcmp(command, "ver", 3) == 0) {
         snprintf(reply, CLI_REPLY_SIZE, "%s (Build: %s)", _callbacks->getFirmwareVer(), _callbacks->getBuildDate());
+    } else if (memcmp(command, "hw", 2) == 0) {
+        /* Hardware report. Remote admin replies ride the caller's LoRa packet
+         * buffer, so the capacity differs -- same idiom as get cad.stats and
+         * get meshtimesync above. Long sections page with a start index. */
+        size_t cap = (sender_timestamp == 0) ? CLI_REPLY_SIZE
+                                             : CLI_REMOTE_REPLY_SIZE;
+        zephcore_hw::handle(command, reply, cap, sender_timestamp == 0,
+                            _board, _rtc, _callbacks);
     } else if (memcmp(command, "board", 5) == 0) {
         snprintf(reply, CLI_REPLY_SIZE, "%s", _board->getManufacturerName());
     } else if (memcmp(command, "sensor get ", 11) == 0) {
