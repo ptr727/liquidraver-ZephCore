@@ -609,9 +609,11 @@ Chatting with it runs the same text CLI as the USB serial sideband; the reply
 comes back as normal chat messages. The firmware also uses it to emit
 unsolicited notices: a one-shot low-battery alert and a restart-reason message
 (every cause `zephcore_boot_reset_cause_str()` can label, which is more than
-the six the companion used to hard-code, except that a debugger reset alone
-raises no notice — offline-queue only, so routine power-on "noise" costs
-nothing over the air).
+the six the companion used to hard-code — offline-queue only, so routine
+power-on "noise" costs nothing over the air). Two causes are silent when they
+are the only one: a debugger reset on any board, and a wake from a deliberate
+low-power shutdown on the families where that is what the bit means, which is
+every board here except `lora_e5_mini`.
 
 **Identity**: seed = `SHA256("zc-vcontact" || self_prv_key || counter)`,
 pubkey = that seed's Ed25519 public point — stable per node, unique per device.

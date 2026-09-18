@@ -1390,8 +1390,8 @@ int main(void)
 		if (zephcore_boot_reset_cause(&cause)) {
 			/* One renderer, shared with every other reader. A hand-rolled
 			 * list here would drift from it, and the one it replaced had
-			 * already drifted: it knew six bits of the fifteen the renderer
-			 * labels, so a DEBUG, SECURITY or CLOCK reset logged as bare
+			 * already drifted: it knew six bits of the seventeen the
+			 * renderer labels, so a SECURITY or CLOCK reset logged as bare
 			 * hex and raised no notice at all. The trade is
 			 * that the notice loses the plain-English hints the local copy
 			 * carried: it now reads "PIN" and "POR" rather than
@@ -1429,11 +1429,18 @@ int main(void)
 			 * entry -- and the standby-wake mapping that would give it the
 			 * other meaning is STM32H7-only, so on lora_e5_mini a fault is
 			 * all it can be. Silencing it there would hide a real defect
-			 * on a node whose serial log nobody is watching. */
-#if defined(CONFIG_SOC_FAMILY_STM32)
-			const uint32_t quiet = RESET_DEBUG;
-#else
+			 * on a node whose serial log nobody is watching.
+			 *
+			 * The test names the families where the bit is known to mean a
+			 * deliberate wake, rather than the ones where it means a fault,
+			 * so a family nobody has checked reports the cause instead of
+			 * being silenced by omission. */
+#if defined(CONFIG_SOC_FAMILY_NORDIC_NRF) || \
+	defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32) || \
+	defined(CONFIG_SOC_FAMILY_SILABS_S2)
 			const uint32_t quiet = RESET_LOW_POWER_WAKE | RESET_DEBUG;
+#else
+			const uint32_t quiet = RESET_DEBUG;
 #endif
 
 			if (n > 0 && (cause & ~quiet) != 0) {
@@ -1451,8 +1458,9 @@ int main(void)
 	/* Fold a persisted shutdown reason into the boot notice.  Written just
 	 * before a previous low-battery System OFF when no app was connected to
 	 * receive it live (the offline queue doesn't survive power-off).  The
-	 * hardware reset cause on this boot is just POR, so without this the
-	 * reason would be lost. */
+	 * hardware cause on this boot does not say "low battery" -- on nRF52840
+	 * a System OFF wake reports LOW_POWER_WAKE, which is quiet above -- so
+	 * without this the reason would be lost. */
 	{
 		uint8_t sdr = data_store.takeShutdownReason();
 		if (sdr == UI_SHUTDOWN_LOW_BATTERY) {
