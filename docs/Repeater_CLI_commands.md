@@ -48,7 +48,7 @@ it is available on **all four roles** — companion, repeater, room server and o
 | `hw board [start]` | `board`, `name`, `soc`, `zephyr`, `fw`, `role`, `bootloader` (when the board can report one), `reset`, `devid` |
 | `hw rtc [start]` | Declared I2C RTC candidates and the boot probe's outcome for each |
 | `hw i2c [start]` | Devicetree-declared I2C inventory. **Not a bus scan** — no bus traffic |
-| `hw i2c scan [start]` | Live scan of 0x08–0x77 on every enabled bus, naming declared addresses |
+| `hw i2c scan [start]` | Live scan of 0x08–0x77 on each bus carrying a declared device, naming declared addresses (see the coverage note below) |
 | `hw gps [start]` | GNSS driver compatible, transport, baud, and enable state |
 | `hw sensors [start]` | Environment and power sensor availability, and which channels report |
 | `hw all [start]` | Every section above, in order |
@@ -74,10 +74,19 @@ This is deliberate and the replies say which is which.
 A scan and a devicetree enumeration are not the same fact. Reporting one as the other is how
 a tool ends up stating something nobody established.
 
-Both cover **every** I2C bus the board enables, whatever its devicetree nodelabel — the tree
-has boards on `i2c22` and `i2c30`, not just `i2c0`–`i2c2`. One gap is worth knowing: an enabled
-bus with **no declared device at all** is not scanned, because the buses are discovered by
-walking declared devices. In practice a bus is enabled because something is on it.
+**Coverage.** Neither is tied to a bus nodelabel: both are built by walking the whole
+devicetree, so a device on `i2c22` or `i2c30` is covered exactly like one on `i2c0`. The tree
+does have boards on those labels.
+
+What each covers, precisely:
+
+- `hw i2c` lists **every declared I2C device**, on any bus.
+- `hw i2c scan` probes **each bus that carries at least one declared device**.
+
+So one gap exists and is worth knowing: an enabled bus with **no declared device at all** is
+never scanned, because the set of buses is derived from the declared devices. In practice a
+bus is enabled because something is on it, but a board that enables a bus purely for an
+undeclared or hot-plugged chip would not see it probed.
 
 ### What the report will not do
 
