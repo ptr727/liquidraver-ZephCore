@@ -389,7 +389,10 @@ void section_i2c_scan(Sink *s)
 	}
 
 	if (buses == 0) {
-		sink_line(s, "i2c: no bus enabled");
+		/* Not "no bus enabled": buses are discovered by walking declared
+		 * devices, so the SoC may well have an enabled controller with
+		 * nothing declared on it. Say only what that walk established. */
+		sink_line(s, "i2c: no bus carries a declared device, none scanned");
 	}
 #endif /* CONFIG_I2C */
 }
