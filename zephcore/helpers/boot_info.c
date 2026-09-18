@@ -6,7 +6,6 @@
 #include "boot_info.h"
 
 #include <zephyr/init.h>
-#include <zephyr/kernel.h>
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/sys/util.h>
 

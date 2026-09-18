@@ -23,7 +23,6 @@ LOG_MODULE_REGISTER(zephcore_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #include <adapters/clock/ZephyrRTCClock.h>
 #include <adapters/clock/ZephyrRTCDiscover.h>
 #include <zephyr/bluetooth/bluetooth.h>
-#include <zephyr/drivers/hwinfo.h>
 #include <helpers/boot_info.h>
 #include <zephyr/sys/reboot.h>
 #include <ZephyrSensorManager.h>
@@ -1375,39 +1374,45 @@ int main(void)
 	LOG_INF("=== ZephCore starting ===");
 
 	/* Log reset reason so we can diagnose random reboots */
-	char boot_cause_msg[96];  /* fits "Restarted:" + all six cause labels */
+	/* Fits "Restarted:" + every label the renderer can emit + the shutdown
+	 * reason appended further below. */
+	char boot_cause_msg[160];
 	boot_cause_msg[0] = '\0';
+	/* Function scope on purpose: with deferred logging a %s argument is read
+	 * when the message is processed, which is after any inner block would
+	 * have ended. Board builds are deferred; only native_sim is immediate. */
+	char boot_cause_labels[112];
 	{
 		uint32_t cause;
 		/* Captured at POST_KERNEL by helpers/boot_info.c, which also did the
 		 * clearing this block used to do. Reading the captured copy rather
-		 * than the register is what lets the `hw` CLI report the same cause
-		 * later in the session -- the register is already cleared by now. */
+		 * than the register is what lets a later diagnostic or CLI report
+		 * name the same cause -- the register is already cleared by now. */
 		if (zephcore_boot_reset_cause(&cause)) {
-			LOG_INF("Reset cause: 0x%08x%s%s%s%s%s%s", cause,
-				(cause & RESET_PIN)       ? " PIN"       : "",
-				(cause & RESET_SOFTWARE)  ? " SOFTWARE"  : "",
-				(cause & RESET_BROWNOUT)  ? " BROWNOUT"  : "",
-				(cause & RESET_POR)       ? " POR"       : "",
-				(cause & RESET_WATCHDOG)  ? " WATCHDOG"  : "",
-				(cause & RESET_CPU_LOCKUP)? " LOCKUP"    : "");
-			/* Every known cause becomes a v-contact message once the mesh
+			/* One renderer, shared with every other reader. A hand-rolled
+			 * list here would drift from it, and the one it replaced had
+			 * already drifted: it knew six bits of the fifteen the renderer
+			 * labels, so a DEBUG, SECURITY, CLOCK or TEMPERATURE reset
+			 * logged as bare hex and raised no notice at all. */
+			int n = zephcore_boot_reset_cause_str(boot_cause_labels,
+							      sizeof(boot_cause_labels));
+
+			LOG_INF("Reset cause: 0x%08x%s", cause, boot_cause_labels);
+
+			/* Every labelled cause becomes a v-contact message once the mesh
 			 * is up (queued below, after RTC restore + prefs load) — the
 			 * message rides the offline queue only, so the "noise" of a
 			 * routine power-on costs nothing over the air and doubles as
 			 * a power-integrity breadcrumb (dead battery, loose contact).
 			 * A deliberate CLI/app reboot shows as SOFTWARE, doubling as
-			 * a "reboot completed" confirmation. */
-			if (cause & (RESET_PIN | RESET_SOFTWARE | RESET_BROWNOUT |
-				     RESET_POR | RESET_WATCHDOG | RESET_CPU_LOCKUP)) {
+			 * a "reboot completed" confirmation.
+			 *
+			 * n is 0 when the cause is 0 or carries only bits this build
+			 * has no label for, which is the same "nothing worth saying"
+			 * the old explicit bit test meant. */
+			if (n > 0) {
 				snprintf(boot_cause_msg, sizeof(boot_cause_msg),
-					 "Restarted:%s%s%s%s%s%s",
-					 (cause & RESET_PIN)        ? " PIN(reset button)" : "",
-					 (cause & RESET_SOFTWARE)   ? " SOFTWARE" : "",
-					 (cause & RESET_BROWNOUT)   ? " BROWNOUT" : "",
-					 (cause & RESET_POR)        ? " POR(power-on)" : "",
-					 (cause & RESET_WATCHDOG)   ? " WATCHDOG" : "",
-					 (cause & RESET_CPU_LOCKUP) ? " LOCKUP"   : "");
+					 "Restarted:%s", boot_cause_labels);
 			}
 		}
 	}

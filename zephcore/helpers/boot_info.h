@@ -18,8 +18,9 @@
  *
  * This captures the cause once at POST_KERNEL, before main() runs on any
  * role, then clears the register so the next boot starts clean. Every reader
- * -- the companion's restart notice and the `hw` CLI report alike -- reads the
- * captured copy, so they cannot disagree and neither can consume it.
+ * -- the companion's restart notice and any later diagnostic or CLI report
+ * alike -- reads the captured copy, so they cannot disagree and neither can
+ * consume it.
  */
 
 #pragma once
