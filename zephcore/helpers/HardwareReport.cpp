@@ -462,14 +462,20 @@ void section_sensors(Sink *s)
 
 void section_summary(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 {
-	sink_line(s, "%s (%s)", CONFIG_BOARD_TARGET, CONFIG_SOC);
+	/* CONFIG_BOARD, not CONFIG_BOARD_TARGET: the target already embeds the
+	 * SoC ("rak4631/nrf52840"), which read as "rak4631/nrf52840 (nrf52840)".
+	 * `hw board` still reports the full target. */
+	sink_line(s, "%s (%s)", CONFIG_BOARD, CONFIG_SOC);
 	if (cb != nullptr) {
 		sink_line(s, "fw %s role %s", cb->getFirmwareVer(), cb->getRole());
 	}
 
 	struct zephcore_rtc_entry active;
 	if (zephcore_rtc_active(&active)) {
-		sink_line(s, "rtc %s@0x%02x", active.name, active.addr);
+		/* A devicetree node's full name already ends in "@<addr>", so the
+		 * address is not appended here -- doing so rendered
+		 * "rtc-rv3028@52@0x52" on real hardware. */
+		sink_line(s, "rtc %s", active.name);
 	} else if (zephcore_rtc_declared() == 0) {
 		sink_line(s, "rtc none declared");
 	} else {
