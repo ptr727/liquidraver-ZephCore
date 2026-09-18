@@ -608,8 +608,13 @@ contact named `v<node_name>` that exists only toward the connected BLE/USB app.
 Chatting with it runs the same text CLI as the USB serial sideband; the reply
 comes back as normal chat messages. The firmware also uses it to emit
 unsolicited notices: a one-shot low-battery alert and a restart-reason message
-(all causes: PIN/SOFTWARE/BROWNOUT/POR/WATCHDOG/LOCKUP — offline-queue only,
-so routine power-on "noise" costs nothing over the air).
+(whichever `RESET_*` cause the board's hwinfo driver reports — across the
+boards here that is PIN, SOFTWARE, BROWNOUT, POR, WATCHDOG, LOCKUP, SECURITY
+and CLOCK — offline-queue only, so routine power-on "noise" costs nothing over
+the air). Two further causes the driver can report are deliberately not
+announced when they are the only ones raised: a debugger reset, and a wake from
+a low-power shutdown, which would otherwise speak up after every power cycle.
+Both still appear in the boot log.
 
 **Identity**: seed = `SHA256("zc-vcontact" || self_prv_key || counter)`,
 pubkey = that seed's Ed25519 public point — stable per node, unique per device.
@@ -1225,9 +1230,12 @@ main event loop (every 5s) → Dispatcher::maintenanceLoop()
 node enabled on any board — the `wdt` nodes visible in board `.dts` files are
 inherited SoC definitions, and the `RTCWDT` references in the TTGO board configs
 concern the ESP32 ROM bootloader's own watchdog, not something ZephCore arms.
-The only consumer of the concept is the boot breadcrumb in `main_companion.cpp`,
-which reads `RESET_WATCHDOG` out of `hwinfo_get_reset_cause()` and reports it in
-the "Restarted:" v-contact message (see [6.2.1](#621-v-contact-loopback-admin-contact)).
+The only consumer of the concept is the boot breadcrumb: `helpers/boot_info.c`
+labels `RESET_WATCHDOG`, and `main_companion.cpp` puts it in the "Restarted:"
+v-contact message (see [6.2.1](#621-v-contact-loopback-admin-contact)).
+`helpers/boot_info.c` captures the cause once at POST_KERNEL on every role and
+attempts the clear there; a platform with no clear implementation returns
+`-ENOSYS` and keeps its flags.
 
 Everything below is software: bounded stall detection in the layer that owns the
 state machine. Each entry names what it recovers, because several are
