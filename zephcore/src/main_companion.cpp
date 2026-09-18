@@ -1379,23 +1379,14 @@ int main(void)
 	 * shutdown reason appended further below (29) + NUL = 166. */
 	char boot_cause_msg[176];
 	boot_cause_msg[0] = '\0';
+	/* Every label the renderer can emit, space-prefixed: 126 + NUL. Declared
+	 * out here, rather than in the block that fills it, so its lifetime does
+	 * not depend on when the logging subsystem copies a %s argument. It does
+	 * copy eagerly today, on every packaging path, but that is an internal
+	 * detail and a log frontend would not. */
+	char boot_cause_labels[128];
 	{
 		uint32_t cause;
-		/* Every label the renderer can emit, space-prefixed: 126 + NUL.
-		 *
-		 * Block scope is safe. Board builds log deferred and native_sim
-		 * logs immediate, and every packaging path copies a %s argument
-		 * pointing at read-write storage into the message while the
-		 * message is being built, rather than dereferencing it later: the
-		 * static path records CBPRINTF_PACKAGE_ADD_RW_STR_POS and converts
-		 * with CBPRINTF_PACKAGE_CONVERT_RW_STR, and the runtime path
-		 * appends the bytes directly. (log_strdup() was the log v1 answer
-		 * to this and no longer exists.)
-		 *
-		 * One future constraint: log_frontend_msg() is handed the package
-		 * before that conversion, so a deferring CONFIG_LOG_FRONTEND would
-		 * see the dead pointer. Nothing here enables one. */
-		char boot_cause_labels[128];
 		/* Captured at POST_KERNEL by helpers/boot_info.c, which also did the
 		 * clearing this block used to do. Reading the captured copy rather
 		 * than the register is what lets a later diagnostic or CLI report
