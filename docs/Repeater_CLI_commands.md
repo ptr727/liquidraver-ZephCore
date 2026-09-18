@@ -35,6 +35,69 @@ All commands are sent over USB serial (CDC-ACM). Commands sent remotely over the
 
 ---
 
+## Hardware Report
+
+`hw` reports what the firmware is and what hardware it actually found. A release build
+compiles every `MESH_DEBUG_*` call away, so this is the only way to get these facts off a
+stock node. Implemented in `helpers/HardwareReport.cpp` and dispatched from `CommonCLI`, so
+it is available on **all four roles** — companion, repeater, room server and observer.
+
+| Command | Description |
+|---------|-------------|
+| `hw` | Summary: board target, SoC, firmware, role, clock source, GNSS, I2C count, reset cause |
+| `hw board [start]` | Board target, SoC, Zephyr version, firmware and build date, role, bootloader, reset cause, device id |
+| `hw rtc [start]` | Declared I2C RTC candidates and the boot probe's outcome for each |
+| `hw i2c [start]` | Devicetree-declared I2C inventory. **Not a bus scan** — no bus traffic |
+| `hw i2c scan [start]` | Live scan of 0x08–0x77 on every enabled bus, naming declared addresses |
+| `hw gps [start]` | GNSS driver compatible, transport, baud, and enable state |
+| `hw sensors [start]` | Environment and power sensor availability, and which channels report |
+| `hw all [start]` | Every section above, in order |
+| `hw <anything else>` | Usage string |
+
+`start` is an optional line index for resuming a truncated reply (see **Paging** below).
+
+### `hw i2c` and `hw i2c scan` answer different questions
+
+This is deliberate and the replies say which is which.
+
+- **`hw i2c`** enumerates what the **devicetree declares**. It costs no bus traffic and
+  carries each node's address, bus and compatible for free. It **cannot see a chip the board
+  does not declare.**
+- **`hw i2c scan`** probes the wire with a zero-length write to each address. It finds
+  undeclared hardware, but a bare address is all the bus itself reveals; declared addresses
+  are annotated with their compatible.
+
+A scan and a devicetree enumeration are not the same fact. Reporting one as the other is how
+a tool ends up stating something nobody established.
+
+### What the report will not do
+
+Every field is something the firmware *knows*. It never infers:
+
+- The GNSS model is reported as the **bound driver's** compatible. A board overlay comment
+  naming a part is documentation, not detection — `rak4631` documents a u-blox MAX-7Q while
+  binding `gnss-nmea-generic`, which happily drives whatever NMEA receiver is fitted, so the
+  reply says `not identified (generic NMEA)` rather than repeating the comment.
+- A board that declares no RTC reports `rtc: none declared in devicetree`, **not** "no RTC".
+  `boards/common/rtc-i2c.dtsi` is opt-in per board, because its fixed addresses (0x68, 0x51,
+  0x52, 0x32) collide with common parts — an IMU sits at 0x68, same as a DS3231. A board with
+  an RTC fitted but not declared is invisible to the firmware, and the reply says exactly that.
+- An RTC candidate the boot probe never reached reports `unprobed`, not `absent`. The probe
+  stops at the first chip holding a valid time.
+- A build with no sensor support reports `not compiled in`, which is a different statement
+  from a sensor manager that looked and found nothing.
+
+### Paging
+
+A reply is bounded by `CLI_REPLY_SIZE` (256) locally and `CLI_REMOTE_REPLY_SIZE` (161) over
+remote admin, since a remote reply rides the caller's LoRa packet buffer. When a section does
+not fit, the reply ends with ` next:N` and `hw <section> N` resumes from that line.
+
+Room is reserved for the marker before the buffer fills, so the resume index is never itself
+truncated — a page that cannot say where to resume is unresumable.
+
+---
+
 ## Clock
 
 | Command | Description |
