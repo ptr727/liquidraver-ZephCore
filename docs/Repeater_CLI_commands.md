@@ -74,6 +74,11 @@ This is deliberate and the replies say which is which.
 A scan and a devicetree enumeration are not the same fact. Reporting one as the other is how
 a tool ends up stating something nobody established.
 
+Both cover **every** I2C bus the board enables, whatever its devicetree nodelabel — the tree
+has boards on `i2c22` and `i2c30`, not just `i2c0`–`i2c2`. One gap is worth knowing: an enabled
+bus with **no declared device at all** is not scanned, because the buses are discovered by
+walking declared devices. In practice a bus is enabled because something is on it.
+
 ### What the report will not do
 
 Every field is something the firmware *knows*. It never infers:
