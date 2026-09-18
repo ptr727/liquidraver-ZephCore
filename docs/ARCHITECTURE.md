@@ -611,10 +611,9 @@ unsolicited notices: a one-shot low-battery alert and a restart-reason message
 (every cause `zephcore_boot_reset_cause_str()` can label, which is more than
 the six the companion used to hard-code — offline-queue only, so routine
 power-on "noise" costs nothing over the air). Two causes are silent when they
-are the only ones raised: a debugger reset on any board, and a wake from a deliberate
-low-power shutdown on the families where that is what the bit means — nRF,
-ESP32 and EFR32. On `lora_e5_mini` the same bit is a fault rather than a wake,
-so it is reported; the `linux_native` targets never raise it at all.
+are the only ones raised: a debugger reset, and a wake from a low-power
+shutdown, which would otherwise announce itself after every power cycle. Both
+still appear in the boot log.
 
 **Identity**: seed = `SHA256("zc-vcontact" || self_prv_key || counter)`,
 pubkey = that seed's Ed25519 public point — stable per node, unique per device.

@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: MIT
- * Boot-time fact capture. See boot_info.h.
+ * Boot-time reset-cause capture. See boot_info.h.
  */
 
 #include "boot_info.h"
@@ -14,30 +14,22 @@
 static uint32_t s_reset_cause;
 static bool s_reset_cause_valid;
 
-/*
- * Captured at POST_KERNEL so it runs before main() on every role, which is
- * what makes this the single reader of the register. The hwinfo reset-cause
- * path needs no device to be ready first: it is a register read on nRF, STM32
- * and EFR32, where this hook is simply the first caller, and on ESP32 and
- * native_sim it returns a value latched during SoC or platform init, which is
- * earlier still.
- */
+/* POST_KERNEL: before main() on every role. */
 static int boot_info_init(void)
 {
 	uint32_t cause = 0;
 
 	if (hwinfo_get_reset_cause(&cause) != 0) {
-		/* Not supported on this platform -- distinct from "no cause". */
+		/* Nothing to capture; the accessor reports false. */
 		return 0;
 	}
 
 	s_reset_cause = cause;
 	s_reset_cause_valid = true;
 
-	/* Clear so the next boot reports its own cause rather than the union of
-	 * every reset since the last clear. Failure is not fatal: the captured
-	 * value for this boot is already correct, and a stale-bit report next
-	 * boot is better than refusing to boot. */
+	/* Clear, so these flags are not reported again next boot. The return is
+	 * discarded: a platform with no clear returns -ENOSYS and there is
+	 * nothing to be done about it. */
 	(void)hwinfo_clear_reset_cause();
 
 	return 0;
@@ -50,37 +42,40 @@ bool zephcore_boot_reset_cause(uint32_t *out)
 	if (!s_reset_cause_valid) {
 		return false;
 	}
-	if (out != NULL) {
-		*out = s_reset_cause;
-	}
+
+	*out = s_reset_cause;
 	return true;
 }
 
+/*
+ * One row per RESET_* bit in <zephyr/drivers/hwinfo.h>. A bit with no row is
+ * rendered as nothing and is invisible to zephcore_boot_reset_cause_labelled().
+ */
+static const struct {
+	uint32_t bit;
+	const char *label;
+} s_labels[] = {
+	{ RESET_PIN,            "PIN" },
+	{ RESET_SOFTWARE,       "SOFTWARE" },
+	{ RESET_BROWNOUT,       "BROWNOUT" },
+	{ RESET_POR,            "POR" },
+	{ RESET_WATCHDOG,       "WATCHDOG" },
+	{ RESET_DEBUG,          "DEBUG" },
+	{ RESET_SECURITY,       "SECURITY" },
+	{ RESET_LOW_POWER_WAKE, "LOWPOWER" },
+	{ RESET_CPU_LOCKUP,     "LOCKUP" },
+	{ RESET_PARITY,         "PARITY" },
+	{ RESET_PLL,            "PLL" },
+	{ RESET_CLOCK,          "CLOCK" },
+	{ RESET_HARDWARE,       "HARDWARE" },
+	{ RESET_USER,           "USER" },
+	{ RESET_TEMPERATURE,    "TEMPERATURE" },
+	{ RESET_BOOTLOADER,     "BOOTLOADER" },
+	{ RESET_FLASH,          "FLASH" },
+};
+
 int zephcore_boot_reset_cause_str(char *buf, size_t cap)
 {
-	static const struct {
-		uint32_t bit;
-		const char *label;
-	} labels[] = {
-		{ RESET_PIN,        "PIN" },
-		{ RESET_SOFTWARE,   "SOFTWARE" },
-		{ RESET_BROWNOUT,   "BROWNOUT" },
-		{ RESET_POR,        "POR" },
-		{ RESET_WATCHDOG,   "WATCHDOG" },
-		{ RESET_DEBUG,      "DEBUG" },
-		{ RESET_SECURITY,   "SECURITY" },
-		{ RESET_LOW_POWER_WAKE, "LOWPOWER" },
-		{ RESET_CPU_LOCKUP, "LOCKUP" },
-		{ RESET_PARITY,     "PARITY" },
-		{ RESET_PLL,        "PLL" },
-		{ RESET_CLOCK,      "CLOCK" },
-		{ RESET_HARDWARE,   "HARDWARE" },
-		{ RESET_USER,       "USER" },
-		{ RESET_TEMPERATURE, "TEMPERATURE" },
-		{ RESET_BOOTLOADER, "BOOTLOADER" },
-		{ RESET_FLASH,      "FLASH" },
-	};
-
 	if (buf == NULL || cap == 0) {
 		return 0;
 	}
@@ -92,18 +87,37 @@ int zephcore_boot_reset_cause_str(char *buf, size_t cap)
 	}
 
 	size_t n = 0;
-	for (size_t i = 0; i < ARRAY_SIZE(labels); i++) {
-		if ((s_reset_cause & labels[i].bit) == 0) {
+
+	for (size_t i = 0; i < ARRAY_SIZE(s_labels); i++) {
+		if ((s_reset_cause & s_labels[i].bit) == 0) {
 			continue;
 		}
-		int w = snprintf(buf + n, cap - n, " %s", labels[i].label);
+
+		int w = snprintf(buf + n, cap - n, " %s", s_labels[i].label);
+
 		if (w < 0 || (size_t)w >= cap - n) {
-			/* Truncated -- stop cleanly rather than half a label. */
+			/* Stop rather than emit half a label. */
 			buf[n] = '\0';
 			break;
 		}
+
 		n += (size_t)w;
 	}
 
 	return (int)n;
+}
+
+uint32_t zephcore_boot_reset_cause_labelled(void)
+{
+	uint32_t mask = 0;
+
+	if (!s_reset_cause_valid) {
+		return 0;
+	}
+
+	for (size_t i = 0; i < ARRAY_SIZE(s_labels); i++) {
+		mask |= s_reset_cause & s_labels[i].bit;
+	}
+
+	return mask;
 }

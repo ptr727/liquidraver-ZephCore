@@ -1400,8 +1400,8 @@ int main(void)
 			 * that the notice loses the plain-English hints the local copy
 			 * carried: it now reads "PIN" and "POR" rather than
 			 * "PIN(reset button)" and "POR(power-on)". */
-			int n = zephcore_boot_reset_cause_str(boot_cause_labels,
-							      sizeof(boot_cause_labels));
+			(void)zephcore_boot_reset_cause_str(boot_cause_labels,
+							    sizeof(boot_cause_labels));
 
 			LOG_INF("Reset cause: 0x%08x%s", cause, boot_cause_labels);
 
@@ -1430,7 +1430,7 @@ int main(void)
 			 * does persist a reason, and it is folded in further below. */
 			const uint32_t quiet = RESET_LOW_POWER_WAKE | RESET_DEBUG;
 
-			if (n > 0 && (cause & ~quiet) != 0) {
+			if ((zephcore_boot_reset_cause_labelled() & ~quiet) != 0) {
 				snprintf(boot_cause_msg, sizeof(boot_cause_msg),
 					 "Restarted:%s", boot_cause_labels);
 			}
