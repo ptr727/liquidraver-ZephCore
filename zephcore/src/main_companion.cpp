@@ -1383,13 +1383,18 @@ int main(void)
 		uint32_t cause;
 		/* Every label the renderer can emit, space-prefixed: 126 + NUL.
 		 *
-		 * Block scope is safe even though board builds log deferred. A %s
-		 * argument pointing at read-write storage is copied into the log
-		 * message when the message is built, not read later: the package
-		 * carries CBPRINTF_PACKAGE_ADD_RW_STR_POS and is converted with
-		 * CBPRINTF_PACKAGE_CONVERT_RW_STR, and the zero-copy path is
-		 * skipped whenever such a string is present. (log_strdup() is the
-		 * log v1 answer to this and no longer exists.) */
+		 * Block scope is safe. Board builds log deferred and native_sim
+		 * logs immediate, and every packaging path copies a %s argument
+		 * pointing at read-write storage into the message while the
+		 * message is being built, rather than dereferencing it later: the
+		 * static path records CBPRINTF_PACKAGE_ADD_RW_STR_POS and converts
+		 * with CBPRINTF_PACKAGE_CONVERT_RW_STR, and the runtime path
+		 * appends the bytes directly. (log_strdup() was the log v1 answer
+		 * to this and no longer exists.)
+		 *
+		 * One future constraint: log_frontend_msg() is handed the package
+		 * before that conversion, so a deferring CONFIG_LOG_FRONTEND would
+		 * see the dead pointer. Nothing here enables one. */
 		char boot_cause_labels[128];
 		/* Captured at POST_KERNEL by helpers/boot_info.c, which also did the
 		 * clearing this block used to do. Reading the captured copy rather
