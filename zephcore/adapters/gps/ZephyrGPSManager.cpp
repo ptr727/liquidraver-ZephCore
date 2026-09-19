@@ -1143,20 +1143,18 @@ static void gps_power_control(bool on, bool keep_vrtc = false)
 	if (on) {
 #if HAS_T1000_GPS_CONTROL
 		/* T1000-E power-on sequence (from Arduino target.cpp start_gps())
-		 * Must follow this exact order with delays. Levels are ASSERTED /
-		 * DE-ASSERTED, not physical: Arduino states them as HIGH/LOW because
-		 * its pins are all active-high, while this block is also reached by
-		 * boards whose lines are active-low (see the gate below).
+		 * Exact order, with delays. Levels below are asserted/de-asserted,
+		 * not physical -- Arduino writes HIGH/LOW because its pins are all
+		 * active-high, and this block also serves active-low boards.
 		 * 1. GPS_EN asserted, delay 10ms
 		 * 2. GPS_VRTC_EN asserted, delay 10ms (critical - RTC power)
 		 * 3. GPS_RESET asserted, delay 10ms, then released
 		 * 4. GPS_SLEEP_INT asserted
 		 *
-		 * Despite the name this is not a T1000-E-only path:
-		 * HAS_T1000_GPS_CONTROL is (HAS_GPS_VRTC || HAS_GPS_RESET ||
-		 * HAS_GPS_SLEEP), so a bare gps-reset alias is enough to route a
-		 * board here. heltec_wifi_lora32_v4, _v43 and thinknode_m9 all arrive
-		 * this way, and all three declare gps-enable active-low.
+		 * Not T1000-E-only despite the name: HAS_T1000_GPS_CONTROL is
+		 * (HAS_GPS_VRTC || HAS_GPS_RESET || HAS_GPS_SLEEP), so a bare
+		 * gps-reset alias routes a board here -- including v4, _v43 and
+		 * thinknode_m9, all of which are active-low.
 		 */
 		if (gpio_is_ready_dt(&gps_enable_gpio)) {
 			gpio_pin_configure_dt(&gps_enable_gpio, GPIO_OUTPUT_ACTIVE);
@@ -1289,11 +1287,10 @@ static void gps_power_control(bool on, bool keep_vrtc = false)
 #endif
 }
 
-/* Put every GPS control line this board declares into its de-asserted state
- * for System OFF -- the power enable, and where present VRTC, reset, sleep,
- * rtcint and resetb -- not the power enable alone.
- * Uses gpio_pin_configure_dt() so pins are properly set even if
- * gps_power_control() was never called (GPIO not yet configured). */
+/* De-assert every GPS control line this board declares for System OFF: the
+ * power enable, and where present VRTC, reset, sleep, rtcint and resetb.
+ * Uses gpio_pin_configure_dt() so pins are set even if gps_power_control()
+ * was never called. */
 void gps_power_off_for_shutdown(void)
 {
 #if HAS_GPS_POWER_REGULATOR
