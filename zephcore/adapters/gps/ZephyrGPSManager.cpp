@@ -1289,7 +1289,9 @@ static void gps_power_control(bool on, bool keep_vrtc = false)
 #endif
 }
 
-/* De-assert all GPS power-enable GPIOs for System OFF.
+/* Put every GPS control line this board declares into its de-asserted state
+ * for System OFF -- the power enable, and where present VRTC, reset, sleep,
+ * rtcint and resetb -- not the power enable alone.
  * Uses gpio_pin_configure_dt() so pins are properly set even if
  * gps_power_control() was never called (GPIO not yet configured). */
 void gps_power_off_for_shutdown(void)
