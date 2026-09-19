@@ -3,7 +3,7 @@
  * Heltec WiFi LoRa 32 V4-R8 — ZephCore procpu DTS
  *
  * Hardware:
- *   MCU:    ESP32-S3 (16 MB flash, 2 MB QSPI PSRAM)
+ *   MCU:    ESP32-S3R8 (16 MB flash, 8 MB octal PSRAM)
  *   Radio:  SX1262 on SPI2, KCT8103L external PA/FEM
  *   OLED:   SSD1306 128x64 on I2C0
  *   Button: GPIO0
@@ -180,7 +180,6 @@
 	status = "okay";
 };
 
-/* Reduce CPU clock from 240 MHz to 160 MHz — saves power, HAL minimum */
 &ledc0 {
 	pinctrl-0 = <&ledc0_default>;
 	pinctrl-names = "default";
