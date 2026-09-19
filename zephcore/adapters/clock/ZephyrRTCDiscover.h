@@ -16,6 +16,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -37,6 +38,50 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
  * intended only for real syncs (GPS/app/CLI), not per-packet clock nudges.
  */
 void zephcore_rtc_save(uint32_t epoch);
+
+/*
+ * ---- Reporting accessors -------------------------------------------------
+ *
+ * Discovery knows which chips the board declares and which one it adopted, but
+ * until now kept both to itself, so a release build could not say what RTC it
+ * is driving (every MESH_DEBUG_* call is compiled away). These expose that
+ * without changing any probing behaviour.
+ *
+ * They report only what discovery actually established. The probe loop stops
+ * at the first chip holding a valid time, so candidates after it are never
+ * reached -- those report UNPROBED rather than being reported as absent. A
+ * candidate whose I2C bus was not ready reports UNPROBED for the same reason:
+ * a probe that could not run is not evidence that the chip is missing.
+ */
+
+enum zephcore_rtc_state {
+	ZEPHCORE_RTC_UNPROBED = 0, /* not probed: discovery stopped before
+				    * reaching it, or its bus was not ready */
+	ZEPHCORE_RTC_ABSENT,       /* no ACK, or a non-RTC chip sharing the address */
+	ZEPHCORE_RTC_PRESENT,      /* an RTC answered and was accepted as one */
+};
+
+/* A devicetree-declared "zephcore,rtc-i2c" candidate, plus its probe outcome. */
+struct zephcore_rtc_entry {
+	const char *name;              /* DT node full name, e.g. "rtc-rv3028@52" */
+	const char *bus;               /* I2C bus device name */
+	uint16_t addr;                 /* I2C address */
+	enum zephcore_rtc_state state; /* what the boot probe found */
+	bool active;                   /* adopted as the write-back target */
+};
+
+/* Number of RTC candidates this board declares in devicetree. 0 if none. */
+size_t zephcore_rtc_declared(void);
+
+/* Fill *out for declared candidate i. False if i is out of range. */
+bool zephcore_rtc_get(size_t i, struct zephcore_rtc_entry *out);
+
+/* Fill *out with the adopted chip. False if none was adopted, which includes
+ * the case where discovery has not run yet -- check zephcore_rtc_probed(). */
+bool zephcore_rtc_active(struct zephcore_rtc_entry *out);
+
+/* Has boot-time discovery run? If false, every state above is UNPROBED. */
+bool zephcore_rtc_probed(void);
 
 #ifdef __cplusplus
 }
