@@ -44,17 +44,21 @@
 	 * for the same network from its schematic (R50/R51) and lands on 5390.
 	 * 5720 therefore reads about 6% high.
 	 *
-	 * Cross-checked against hardware: a cell metered at 4.18 V read 868.4 mV
-	 * at the pin, which this driver presents as a raw of 3233, so 5390 yields
-	 * 4254 mV -- 1.8% high, and that 1.8% is the same offset the pin
-	 * measurement itself showed against the meter, i.e. resistor tolerance
-	 * rather than a modelling error.
+	 * Plausibility check, computed rather than observed through this driver:
+	 * a separate ESP-IDF reader on this board measured 868.4 mV at the
+	 * divider output against a cell metered at 4.18 V. Projecting that pin
+	 * voltage onto the 1100 mV / 4095 scale above gives a raw of 3233, from
+	 * which 5390 would yield 4254 mV, 1.8% high -- the same offset that
+	 * reader itself showed against the meter, i.e. resistor tolerance rather
+	 * than a modelling error. Every number after "868.4 mV" is arithmetic, so
+	 * this supports 5390 without being a measurement of it.
 	 *
 	 * Note 5.2 is not arithmetic from these resistors at all; it comes from
 	 * MeshCore's empirical Arduino multiplier, where analogReadMilliVolts()
 	 * returns true millivolts and the constant therefore absorbs the loaded
-	 * ratio. Settling 4.90 vs an effective loaded value needs a reading taken
-	 * through THIS driver against a metered cell, which has not been done. */
+	 * ratio. Settling 4.90 against an effective loaded value needs
+	 * getBattMilliVolts() itself read against a metered cell, which has not
+	 * been done -- and that is the reading this comment does NOT have. */
 	zephyr,user {
 		io-channels = <&adc0 0>;
 		vbat-mv-multiplier = <5390>;
