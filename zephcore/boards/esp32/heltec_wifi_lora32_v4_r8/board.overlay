@@ -30,12 +30,25 @@
 	/* Battery ADC — ZephCore reads via zephyr,user { io-channels }.
 	 * GPIO1 = ADC unit 1 = node &adc0 (label is 0-indexed, unit is 1-indexed);
 	 * the old &adc1 was unit 2 = GPIO11 = SX1262 MISO — always read 0.
-	 * Multiplier: Vref_internal(1100) * divider_ratio(5.2) = 5720 on the
-	 * 100K/390K divider (was 17886, which assumed a 3300mV full-scale that
-	 * ADC_REF_INTERNAL does not provide). Channel config is in the DTS. */
+	 * Multiplier = full_scale_mV * divider_ratio, where the 390K/100K
+	 * divider gives (390+100)/100 = 4.9.
+	 *
+	 * The 5720 the other Heltec S3 overlays use is wrong twice over: it
+	 * takes a 1100 mV full scale, which is the classic ESP32 figure the
+	 * S3 does not provide (the S3 supports only ADC_CALI_SCHEME_CURVE_FITTING,
+	 * and its 0 dB range tops out near 950 mV), and it pairs it with a 5.2
+	 * ratio this divider does not have. Both errors push the reading high.
+	 *
+	 * 4682 is measured on this board: raw 3657/4095 against a cell at
+	 * 4.18 V gives 4180 * 4096 / 3657, and back-solving full scale as
+	 * 4682 / 4.9 = 955 mV agrees with the datasheet range within 1%.
+	 * 5720 reads ~22% high, so every battery figure the node reports is
+	 * inflated: REQ_TYPE_GET_STATUS, the CayenneLPP telemetry voltage and
+	 * the OLED gauge. (The low-battery auto-shutdown is companion-only and
+	 * defaults to disabled on this SoC, so it is not affected.) */
 	zephyr,user {
 		io-channels = <&adc0 0>;
-		vbat-mv-multiplier = <5720>;
+		vbat-mv-multiplier = <4682>;
 	};
 
 	/* No vbat-enable regulator.
