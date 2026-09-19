@@ -30,18 +30,11 @@ static int boot_info_init(void)
 	s_reset_cause = cause;
 	s_reset_cause_valid = true;
 
-	/* Log here rather than only in the role that renders it, because the
-	 * clear below is what makes it necessary. Until this helper existed the
-	 * register was left alone on every role except the companion, so a
-	 * repeater that rebooted on WATCHDOG or LOCKUP still held the evidence
-	 * in the hardware register for whoever read it over SWD afterwards.
-	 * Capturing and clearing without logging would destroy that on three of
-	 * the four roles and record it nowhere. */
+	/* Logged here, not only in the role that renders it: the clear below
+	 * would otherwise lose the cause on roles that never read it. */
 	LOG_INF("Boot reset cause: 0x%08x", cause);
 
-	/* Clear, so these flags are not reported again next boot. The return is
-	 * discarded: a platform with no clear returns -ENOSYS and there is
-	 * nothing to be done about it. */
+	/* Not reported again next boot. -ENOSYS where unimplemented (ESP32). */
 	(void)hwinfo_clear_reset_cause();
 
 	return 0;

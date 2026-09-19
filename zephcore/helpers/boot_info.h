@@ -1,15 +1,9 @@
 /*
  * SPDX-License-Identifier: MIT
  *
- * The MCU's reset cause, captured once at boot.
- *
- * hwinfo's flags accumulate between resets on some platforms; clearing after
- * reading is what isolates the most recent one. The companion did that in
- * main(), making it both the only reader and the one that cleared. The
- * repeater, room server and observer did neither.
- *
- * Doing it once at POST_KERNEL covers every role and keeps the value for
- * later readers.
+ * The MCU's reset cause, captured and cleared once at POST_KERNEL on every
+ * role. hwinfo's flags accumulate between resets on some platforms, so
+ * clearing after reading is what isolates the most recent one.
  */
 
 #pragma once
@@ -23,30 +17,24 @@ extern "C" {
 #endif
 
 /*
- * The reset cause hwinfo reported at boot. out must be non-NULL.
- *
- * False means hwinfo could not report one, which is not the same as a cause
- * of 0. Call from main() or later: an initialiser at or before POST_KERNEL
- * CONFIG_KERNEL_INIT_PRIORITY_DEFAULT may get false.
+ * The cause hwinfo reported at boot. out must be non-NULL. False means hwinfo
+ * could not report one, which differs from a cause of 0. Call from main() or
+ * later; an initialiser at or before POST_KERNEL may get false.
  */
 bool zephcore_boot_reset_cause(uint32_t *out);
 
 /*
- * Render the cause as space-prefixed labels, e.g. " PIN SOFTWARE". Returns
- * the characters written, excluding the NUL.
- *
- * 0 means nothing to render: no cause, a cause of 0, no labelled bits, or cap
- * too small for one label. Nothing at all is written when buf is NULL or cap
- * is 0; otherwise buf is always NUL-terminated. The first label that does not
- * fit ends the string.
+ * Render as space-prefixed labels, e.g. " PIN SOFTWARE". Returns characters
+ * written, excluding the NUL; 0 means nothing to render. Writes nothing when
+ * buf is NULL or cap is 0, otherwise always NUL-terminates, truncating at the
+ * first label that does not fit.
  */
 int zephcore_boot_reset_cause_str(char *buf, size_t cap);
 
 /*
- * The part of the cause that zephcore_boot_reset_cause_str() would name. A
- * caller deciding whether a cause is worth reporting wants this rather than
- * the raw cause, so an unlabelled bit cannot attribute a report to whichever
- * labels happen to accompany it.
+ * The part of the cause the renderer would name. Use this rather than the raw
+ * cause when deciding whether a cause is worth reporting, so an unlabelled bit
+ * cannot trigger a report that then names unrelated labels.
  */
 uint32_t zephcore_boot_reset_cause_labelled(void);
 

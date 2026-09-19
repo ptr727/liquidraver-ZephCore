@@ -1387,15 +1387,9 @@ int main(void)
 	LOG_INF("=== ZephCore starting ===");
 
 	/* Log reset reason so we can diagnose random reboots */
-	/* Fits "Restarted:" (10) + every label the renderer can emit (126) + the
-	 * shutdown reason appended further below (29) + NUL = 166.
-	 *
-	 * Sized for the worst case this code can produce, not for what survives
-	 * end to end: on a board with no hardware RTC the notice is queued before
-	 * the clock is valid, and vcontactNotify() then copies it into a 64-byte
-	 * pending slot and truncates at 63. The sizing here keeps this function
-	 * correct on its own terms; it is not a guarantee about what the peer
-	 * finally sees. */
+	/* "Restarted:" (10) + every label (126) + shutdown reason (29) + NUL.
+	 * Worst case this function can produce; vcontactNotify() truncates to 63
+	 * on the RTC-less path, so this is not an end-to-end guarantee. */
 	char boot_cause_msg[176];
 	boot_cause_msg[0] = '\0';
 	/* Every label the renderer can emit, space-prefixed: 126 + NUL. Declared
@@ -1449,14 +1443,9 @@ int main(void)
 			 * the chat after every power cycle. The low-battery shutdown
 			 * does persist a reason, and it is folded in further below.
 			 *
-			 * Known cost of quieting that bit, on STM32 only. hwinfo_stm32.c
-			 * maps nine sources onto RESET_LOW_POWER_WAKE, and one of them
-			 * (LPWRRSTF, illegal low-power-mode entry) is a fault rather than
-			 * a routine wake, so a real fault raises no notice there. It is
-			 * not hidden: boot_info.c logs the raw cause on every boot and
-			 * every role before clearing it. Splitting the two apart would
-			 * need per-SoC knowledge of which sources share the bit, which is
-			 * a bigger change than this one. */
+			 * Costs one case on STM32: hwinfo_stm32.c folds LPWRRSTF, an
+			 * illegal low-power entry, onto the same bit as routine wakes,
+			 * so that fault raises no notice. Still logged by boot_info.c. */
 			const uint32_t quiet = RESET_LOW_POWER_WAKE | RESET_DEBUG;
 
 			if ((zephcore_boot_reset_cause_labelled() & ~quiet) != 0) {
