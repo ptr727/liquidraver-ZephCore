@@ -100,7 +100,7 @@ static bool gps_diag_on = false;
  *   every wake is a warm start, not a cold one. (Backup mode, the deeper
  *   state, requires cutting VCC while V_BCKP holds the RTC domain; this
  *   board has no VCC switch, so Standby is the floor available to us.)
- * - T1000-E (AG3335): GPS_EN LOW + VRTC HIGH = warm standby (ephemeris
+ * - T1000-E (AG3335): GPS_EN de-asserted + VRTC asserted = warm standby (ephemeris
  *   preserved via backup RAM, ~1-2µA VRTC current)
  * - All boards: gps-enable alias → GPIO power control
  *
@@ -228,7 +228,7 @@ static void gnss_data_cb(const struct device *dev, const struct gnss_data *data)
 	if (!gps_enabled || gps_current_state == GPS_STATE_STANDBY) {
 		/* GPS disabled or in standby — ignore NMEA data.
 		 * The GNSS driver fires callbacks as long as the UART has data,
-		 * even after we drive GPS_EN LOW (module drains its buffer).
+		 * even after we de-assert GPS_EN (module drains its buffer).
 		 * On boards without GPS power control (e.g. RAK3401 where 3V3_S
 		 * rail is shared with LoRa FEM), the GPS module stays powered in
 		 * standby and keeps streaming NMEA — suppress those callbacks to
@@ -1084,7 +1084,7 @@ static const struct gpio_dt_spec gps_sleep_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps_
 #define HAS_GPS_SLEEP 0
 #endif
 
-/* GPS RTC interrupt pin — held LOW during normal operation */
+/* GPS RTC interrupt pin — held de-asserted during normal operation */
 #if DT_NODE_EXISTS(DT_ALIAS(gps_rtc_int))
 static const struct gpio_dt_spec gps_rtcint_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps_rtc_int), gpios);
 #define HAS_GPS_RTCINT 1
@@ -1224,7 +1224,7 @@ static void gps_power_control(bool on, bool keep_vrtc = false)
 		/* Power off sequence */
 #if HAS_GPS_RESET
 		/* Hold GPS in reset during power-off — matches Arduino sleep_gps()/stop_gps().
-		 * Ensures chip sees RESET asserted when GPS_EN goes HIGH on next
+		 * Ensures chip sees RESET asserted when GPS_EN is asserted on next
 		 * power-on, preventing uncontrolled startup before the reset pulse.
 		 * Configure-on-first-use (mirrors the GPS_EN pin below): on a
 		 * boot-with-GPS-off the power-on path never ran, so the pin isn't an
@@ -1251,7 +1251,7 @@ static void gps_power_control(bool on, bool keep_vrtc = false)
 				}
 			}
 		}
-		/* else: warm standby — VRTC stays HIGH, preserving
+		/* else: warm standby — VRTC stays asserted, preserving
 		 * ephemeris/almanac/RTC for fast re-acquisition (~1-2 µA) */
 #endif
 		if (gpio_is_ready_dt(&gps_enable_gpio)) {
@@ -1264,14 +1264,14 @@ static void gps_power_control(bool on, bool keep_vrtc = false)
 		}
 
 #if HAS_GPS_RESETB
-		/* Drive RESETB LOW when GPS is off (Arduino sleep_gps/stop_gps) */
+		/* Assert RESETB when GPS is off (Arduino sleep_gps/stop_gps) */
 		if (gpio_is_ready_dt(&gps_resetb_gpio)) {
 			gpio_pin_configure_dt(&gps_resetb_gpio, GPIO_OUTPUT_INACTIVE);
 		}
 #endif
 
 #if HAS_GPS_RTCINT
-		/* GPS_RTC_INT stays LOW during sleep/off (same as normal operation) */
+		/* GPS_RTC_INT stays de-asserted during sleep/off (same as normal operation) */
 		if (gpio_is_ready_dt(&gps_rtcint_gpio)) {
 			gpio_pin_configure_dt(&gps_rtcint_gpio, GPIO_OUTPUT_INACTIVE);
 		}
@@ -1289,7 +1289,7 @@ static void gps_power_control(bool on, bool keep_vrtc = false)
 #endif
 }
 
-/* Drive all GPS power-enable GPIOs LOW for System OFF.
+/* De-assert all GPS power-enable GPIOs for System OFF.
  * Uses gpio_pin_configure_dt() so pins are properly set even if
  * gps_power_control() was never called (GPIO not yet configured). */
 void gps_power_off_for_shutdown(void)
@@ -1541,7 +1541,7 @@ static uint32_t gps_acquire_window_ms(void)
 
 /* Go to standby and schedule next wake.
  * GPIO power control only — keep VRTC for warm start on T1000-E,
- * FORCE_ON pin LOW for L76K hardware standby. */
+ * FORCE_ON de-asserted for L76K hardware standby. */
 static void gps_go_to_standby(void)
 {
 	/* Unified standby interval for both roles — set from prefs.gps_interval
