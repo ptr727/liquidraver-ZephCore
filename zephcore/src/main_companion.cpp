@@ -1388,7 +1388,14 @@ int main(void)
 
 	/* Log reset reason so we can diagnose random reboots */
 	/* Fits "Restarted:" (10) + every label the renderer can emit (126) + the
-	 * shutdown reason appended further below (29) + NUL = 166. */
+	 * shutdown reason appended further below (29) + NUL = 166.
+	 *
+	 * Sized for the worst case this code can produce, not for what survives
+	 * end to end: on a board with no hardware RTC the notice is queued before
+	 * the clock is valid, and vcontactNotify() then copies it into a 64-byte
+	 * pending slot and truncates at 63. The sizing here keeps this function
+	 * correct on its own terms; it is not a guarantee about what the peer
+	 * finally sees. */
 	char boot_cause_msg[176];
 	boot_cause_msg[0] = '\0';
 	/* Every label the renderer can emit, space-prefixed: 126 + NUL. Declared
@@ -1425,9 +1432,10 @@ int main(void)
 			 * A deliberate CLI/app reboot shows as SOFTWARE, doubling as
 			 * a "reboot completed" confirmation.
 			 *
-			 * n is 0 when the cause is 0 or carries only bits this build
-			 * has no label for, which is the same "nothing worth saying"
-			 * the old explicit bit test meant.
+			 * zephcore_boot_reset_cause_labelled() is 0 when the cause is
+			 * 0 or carries only bits this build has no label for, which is
+			 * the same "nothing worth saying" the old explicit bit test
+			 * meant.
 			 *
 			 * A debugger-initiated reset is the developer's own doing and
 			 * is not worth a chat message on its own. A quiet cause still
@@ -1439,7 +1447,16 @@ int main(void)
 			 * for: the button power-off persists no reason, so announcing
 			 * the wake would put an unexplained "Restarted: LOWPOWER" in
 			 * the chat after every power cycle. The low-battery shutdown
-			 * does persist a reason, and it is folded in further below. */
+			 * does persist a reason, and it is folded in further below.
+			 *
+			 * Known cost of quieting that bit, on STM32 only. hwinfo_stm32.c
+			 * maps nine sources onto RESET_LOW_POWER_WAKE, and one of them
+			 * (LPWRRSTF, illegal low-power-mode entry) is a fault rather than
+			 * a routine wake, so a real fault raises no notice there. It is
+			 * not hidden: boot_info.c logs the raw cause on every boot and
+			 * every role before clearing it. Splitting the two apart would
+			 * need per-SoC knowledge of which sources share the bit, which is
+			 * a bigger change than this one. */
 			const uint32_t quiet = RESET_LOW_POWER_WAKE | RESET_DEBUG;
 
 			if ((zephcore_boot_reset_cause_labelled() & ~quiet) != 0) {

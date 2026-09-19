@@ -1234,7 +1234,12 @@ which reports `RESET_WATCHDOG` in the "Restarted:" v-contact message (see
 [6.2.1](#621-v-contact-loopback-admin-contact)). It reads the cause from
 `zephcore_boot_reset_cause()` rather than from `hwinfo_get_reset_cause()`
 directly: `helpers/boot_info.c` captures the register once at POST_KERNEL on
-every role and clears it there, so no later reader can consume it.
+every role, logs it, and clears it where the platform implements a clear, so
+no later reader can consume it. nRF implements `hwinfo_clear_reset_cause()`;
+ESP32 does not, so the weak stub returns `-ENOSYS` and nothing is cleared
+there. That is harmless on ESP32, whose cause comes from `esp_reset_reason()`
+and does not accumulate across boots, but the capture is what readers should
+rely on rather than the register.
 
 Everything below is software: bounded stall detection in the layer that owns the
 state machine. Each entry names what it recovers, because several are
