@@ -21,10 +21,13 @@
  *   Detection: GPIO2 default pull differs (GC1109: pull-down, KCT8103L: pull-up)
  *   (See MeshCore PR#1867, Heltec schematic HTIT-WB32LAF_V4.3)
  *
- * Hardware common to V4.2, i.e. everything the pin moves above do not touch:
- *   GPIO7  = VFEM_Ctrl LDO power (active-HIGH, always-on)
- *   GPIO2  = KCT8103L CSD (chip enable, active-HIGH)
- *   GPIO5  = KCT8103L CTX (TX/RX select: HIGH=TX, LOW=RX/LNA)  ← V4.3 change
+ * Pins the PSRAM reshuffle does not move. Origin is noted per line, because
+ * this board takes its FEM from V4.3 and not every line here exists on V4.2:
+ *   GPIO7  = VFEM_Ctrl LDO power (active-HIGH, always-on)  — V4.2 onward
+ *   GPIO2  = FEM CSD (chip enable, active-HIGH)            — V4.2 onward
+ *   GPIO5  = KCT8103L CTX (TX/RX select: HIGH=TX, LOW=RX/LNA) — V4.3 onward.
+ *            V4.2 has NO CTX: its GC1109 is driven by TX_EN on GPIO46. Do not
+ *            carry this line back to heltec_wifi_lora32_v4.
  *
  * LoRa SPI2:  SCLK=9, MOSI=10, MISO=11, NSS=8
  * LoRa ctrl:  DIO1=14, BUSY=13, RESET=12
