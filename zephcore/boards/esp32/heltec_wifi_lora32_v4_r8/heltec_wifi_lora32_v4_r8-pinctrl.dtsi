@@ -2,13 +2,14 @@
  * SPDX-License-Identifier: MIT
  * Heltec WiFi LoRa 32 V4-R8 — Pin Control Definitions
  *
- * Pinctrl assignments identical to V4.2/V4.3 (GPIO5/CTX is plain GPIO, no pinctrl
- * entry needed). The R8's pin moves -- Vext, LED, VGNSS_Ctrl -- are all plain
- * GPIO and live in the DTS and overlay, not here:
+ * Pinctrl assignments follow V4.2/V4.3 except LEDC0, which must track the LED's
+ * move to GPIO46 -- GPIO35 is one of the octal-PSRAM pads on an S3R8. GPIO5/CTX
+ * is plain GPIO and needs no pinctrl entry. Vext and VGNSS_Ctrl are plain GPIO
+ * too and live in the DTS and overlay, not here:
  *   UART0:  TX=GPIO43, RX=GPIO44
  *   I2C0:   SDA=GPIO17, SCL=GPIO18   (SSD1306 OLED + sensors)
  *   SPI2:   SCLK=GPIO9, MOSI=GPIO10, MISO=GPIO11  (SX1262 LoRa)
- *   LEDC0:  CH0=GPIO35  (PWM LED)
+ *   LEDC0:  CH0=GPIO46  (PWM LED — GPIO35 is an octal-PSRAM pad on the R8)
  */
 
 #include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
@@ -48,7 +49,7 @@
 
 	ledc0_default: ledc0_default {
 		group1 {
-			pinmux = <LEDC_CH0_GPIO35>;
+			pinmux = <LEDC_CH0_GPIO46>;
 			output-enable;
 		};
 	};
