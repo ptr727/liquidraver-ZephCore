@@ -151,11 +151,11 @@
  * (0 dB) with ADC_REF_INTERNAL; the 390K/100K divider output for a 3.0-4.2 V
  * cell sits well inside range.
  *
- * Do not read a full-scale figure into ADC_REF_INTERNAL here: on the S3 the
- * 0 dB range tops out near 955 mV, not the 1100 mV of the classic ESP32, and
- * assuming 1100 is half of why the sibling boards' multiplier reads ~22% high.
- * board.overlay's vbat-mv-multiplier owns that number and states its
- * derivation. */
+ * The SoC's true 0 dB span does not enter the battery maths: Zephyr's
+ * adc_esp32 driver calibrates the hardware raw and then re-projects it onto a
+ * fixed 1100 mV / 4095 scale before the application sees it, so the value
+ * board.overlay's vbat-mv-multiplier scales is already on that scale whatever
+ * the silicon does. That file owns the number and states its derivation. */
 &adc0 {
 	status = "okay";
 	#address-cells = <1>;

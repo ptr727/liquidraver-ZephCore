@@ -30,26 +30,34 @@
 	/* Battery ADC — ZephCore reads via zephyr,user { io-channels }.
 	 * GPIO1 = ADC unit 1 = node &adc0 (label is 0-indexed, unit is 1-indexed);
 	 * the old &adc1 was unit 2 = GPIO11 = SX1262 MISO — always read 0.
-	 * Multiplier = full_scale_mV * divider_ratio, where the 390K/100K
-	 * divider gives (390+100)/100 = 4.9.
+	 * Multiplier = 1100 * divider_ratio. The 1100 is NOT the classic-ESP32
+	 * ADC reference: Zephyr's adc_esp32 driver calibrates the hardware raw
+	 * through adc_cali_raw_to_voltage() and then re-projects the result onto
+	 * a fixed 1100 mV / 4095 scale before the application sees it
+	 * (adc_esp32.c: acq_raw = acq_mv * ((1 << res) - 1) / meas_ref_internal,
+	 * with meas_ref_internal hardcoded to 1100 and no devicetree property to
+	 * change it). So 1100 is exactly right here whatever the SoC's true 0 dB
+	 * span is, and every other ESP32 board in this tree uses the same form.
 	 *
-	 * The 5720 the other Heltec S3 overlays use is wrong twice over: it
-	 * takes a 1100 mV full scale, which is the classic ESP32 figure the
-	 * S3 does not provide (the S3 supports only ADC_CALI_SCHEME_CURVE_FITTING,
-	 * and its 0 dB range tops out near 950 mV), and it pairs it with a 5.2
-	 * ratio this divider does not have. Both errors push the reading high.
+	 * The ratio is what 5720 got wrong: it used 5.2, while this 390K/100K
+	 * divider is (390+100)/100 = 4.90. meshnology_w12 states the same 4.90
+	 * for the same network from its schematic (R50/R51) and lands on 5390.
+	 * 5720 therefore reads about 6% high.
 	 *
-	 * 4682 is measured on this board: a raw count of 3657 against a cell at
-	 * 4.18 V gives 4180 * 4096 / 3657, matching the /4096 the driver uses,
-	 * and back-solving full scale as
-	 * 4682 / 4.9 = 955 mV agrees with the datasheet range within 1%.
-	 * 5720 reads ~22% high, so every battery figure the node reports is
-	 * inflated: REQ_TYPE_GET_STATUS, the CayenneLPP telemetry voltage and
-	 * the OLED gauge. (The low-battery auto-shutdown is companion-only and
-	 * defaults to disabled on this SoC, so it is not affected.) */
+	 * Cross-checked against hardware: a cell metered at 4.18 V read 868.4 mV
+	 * at the pin, which this driver presents as a raw of 3233, so 5390 yields
+	 * 4254 mV -- 1.8% high, and that 1.8% is the same offset the pin
+	 * measurement itself showed against the meter, i.e. resistor tolerance
+	 * rather than a modelling error.
+	 *
+	 * Note 5.2 is not arithmetic from these resistors at all; it comes from
+	 * MeshCore's empirical Arduino multiplier, where analogReadMilliVolts()
+	 * returns true millivolts and the constant therefore absorbs the loaded
+	 * ratio. Settling 4.90 vs an effective loaded value needs a reading taken
+	 * through THIS driver against a metered cell, which has not been done. */
 	zephyr,user {
 		io-channels = <&adc0 0>;
-		vbat-mv-multiplier = <4682>;
+		vbat-mv-multiplier = <5390>;
 	};
 
 	/* No vbat-enable regulator.
