@@ -501,11 +501,14 @@ endif()
 # re-arms the window. These boards are in the field deliberately to get light
 # sleep exercised; drop them from the regex to take it away.
 #
-# The regex lists v43 explicitly. "heltec_wifi_lora32_v4" already substring-
-# matches it (CMake MATCHES is unanchored), which made V4.3's inclusion look
-# accidental; spelling it out makes the intent reviewable.
+# Anchored, and every member spelled out. CMake MATCHES is unanchored, so the
+# bare alternation let any board whose name merely *starts* with one of these
+# join the list: "heltec_wifi_lora32_v4" swept in "heltec_wifi_lora32_v4_r8",
+# which silently shipped CONFIG_PM=y on a board nobody had validated it on.
+# BOARD carries its qualifiers (heltec_wifi_lora32_v4/esp32s3/procpu), so the
+# tail is "/" or end-of-string rather than "$" alone.
 if(ZEPHCORE_PLATFORM_CONF MATCHES "esp32_common" AND EXTRA_CONF_FILE MATCHES "repeater"
-   AND BOARD MATCHES "heltec_wifi_lora32_v3|heltec_wifi_lora32_v4|heltec_wifi_lora32_v43|heltec_wireless_tracker")
+   AND BOARD MATCHES "^(heltec_wifi_lora32_v3|heltec_wifi_lora32_v4|heltec_wifi_lora32_v43|heltec_wireless_tracker|heltec_wireless_tracker_v2)(/|$)")
     set(ZEPHCORE_PM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/pm_esp32.conf")
     if(EXISTS ${ZEPHCORE_PM_CONF})
         list(APPEND ZEPHCORE_CONF_FILES ${ZEPHCORE_PM_CONF})

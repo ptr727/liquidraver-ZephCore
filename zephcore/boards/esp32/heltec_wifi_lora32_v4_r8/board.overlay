@@ -14,7 +14,7 @@
  * Vext:       GPIO40 (active-LOW, powers OLED and sensors)
  * Button:     GPIO0
  * LED:        GPIO46
- * GPS UART1:  TX=GPIO39, RX=GPIO38, 9600 baud (Quectel L76)
+ * GPS UART1:  TX=GPIO38, RX=GPIO39, 9600 baud (Quectel L76K)
  * GPS ctrl:   VGNSS_Ctrl GPIO42 (active-LOW); no reset line on R8
  */
 
@@ -39,8 +39,9 @@
 	 * and its 0 dB range tops out near 950 mV), and it pairs it with a 5.2
 	 * ratio this divider does not have. Both errors push the reading high.
 	 *
-	 * 4682 is measured on this board: raw 3657/4095 against a cell at
-	 * 4.18 V gives 4180 * 4096 / 3657, and back-solving full scale as
+	 * 4682 is measured on this board: a raw count of 3657 against a cell at
+	 * 4.18 V gives 4180 * 4096 / 3657, matching the /4096 the driver uses,
+	 * and back-solving full scale as
 	 * 4682 / 4.9 = 955 mV agrees with the datasheet range within 1%.
 	 * 5720 reads ~22% high, so every battery figure the node reports is
 	 * inflated: REQ_TYPE_GET_STATUS, the CayenneLPP telemetry voltage and
@@ -109,17 +110,23 @@
 };
 
 /* Patch LoRa radio: add pull-down on DIO1 and enable RX boosted mode.
- * DTS defines antenna-enable, tx-enable, dio2-tx-enable, and TCXO already. */
+ * DTS defines antenna-enable, dio2-tx-enable, TCXO and lna-bypass-gpios.
+ * Deliberately NOT tx-enable-gpios: binding CTX that way is what gated CSD in
+ * 1.17.2 and cost ~69 dB of receive path (see the DTS note on lna-bypass). */
 &lora0 {
 	dio1-gpios = <&gpio0 14 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
 	rx-boosted;
 };
 
 /* GPS on UART1 — optional external NMEA module on the pin header, wired to the
- * same pins Arduino MeshCore uses for this board (PIN_GPS_RX=38, PIN_GPS_TX=39;
- * Arduino names them from the MCU's point of view, so RX=38 is the MCU input).
+ * same pins Arduino MeshCore uses for this board. Its macro names read the
+ * other way round (PIN_GPS_RX=38, PIN_GPS_TX=39), but it calls
+ * Serial1.setPins(PIN_GPS_TX, PIN_GPS_RX) and Arduino-ESP32's signature is
+ * setPins(rxPin, txPin) -- rx first -- so the wiring is MCU TX=38, RX=39.
+ * Proven on hardware: the module answers its version query (URANUS5) only
+ * with the pins this way round. Do not "fix" this back to the macro names.
  * Upstream leaves uart1 disabled and gives it no pinctrl, so both are set here.
- * GPIO38/39 are otherwise unclaimed on the V4; the console stays on usb_serial
+ * GPIO38/39 are otherwise unclaimed on the V4-R8; the console stays on usb_serial
  * (or uart0/GPIO43-44 for companion USB builds).  9600 baud matches Arduino's
  * default for this variant.
  *

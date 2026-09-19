@@ -55,7 +55,7 @@ station_g2/esp32s3/procpu
 heltec_wifi_lora32_v3/esp32s3/procpu
 heltec_wifi_lora32_v4/esp32s3/procpu
 heltec_wifi_lora32_v43/esp32s3/procpu
-heltec_wifi_lora32_v4_r8/esp32s3/procpu
+heltec_wifi_lora32_v4_r8/esp32s3/procpu   # source-only, no published firmware
 heltec_wireless_tracker/esp32s3/procpu
 heltec_wireless_tracker_v2/esp32s3/procpu
 thinknode_m9/esp32s3/procpu
@@ -92,9 +92,12 @@ ttgo_lora32/esp32/procpu   # source-only, no published firmware
 >
 > Verified against the vendor pinmap at <https://heltec.org/project/wifi-lora-32-v4/>.
 >
-> **Do not flash `heltec_wifi_lora32_v4` or `heltec_wifi_lora32_v43` to a V4-R8**: Vext would be
-> driven on GPIO36 instead of GPIO40, so the rail feeding the OLED and sensors never switches, and
-> GPIO37 would be driven as an ADC enable this revision does not have.
+> **Do not flash `heltec_wifi_lora32_v4` or `heltec_wifi_lora32_v43` to a V4-R8.** Those images
+> build against `esp32s3_wroom_n16r2`, so PSRAM comes up as 2 MB quad on an 8 MB octal part, and
+> they drive GPIO35/36/37 as ordinary outputs — GPIO33-37 are the octal-PSRAM pads on an S3R8.
+> PSRAM is therefore both misconfigured and pin-contended. On top of that Vext is driven on GPIO36
+> instead of GPIO40, so the rail feeding the OLED and sensors never switches, and GPIO37 is driven
+> as an ADC enable this revision does not have.
 >
 > **Heltec Wireless Tracker** (`heltec_wireless_tracker/esp32s3/procpu`): V1.1
 > ESP32-S3-FN8 companion with SX1262, ST7735R 160x80 TFT, and UC6580 GPS.

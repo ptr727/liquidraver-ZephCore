@@ -21,7 +21,7 @@
  *   Detection: GPIO2 default pull differs (GC1109: pull-down, KCT8103L: pull-up)
  *   (See MeshCore PR#1867, Heltec schematic HTIT-WB32LAF_V4.3)
  *
- * All other hardware is identical to V4.2:
+ * Hardware common to V4.2, i.e. everything the pin moves above do not touch:
  *   GPIO7  = VFEM_Ctrl LDO power (active-HIGH, always-on)
  *   GPIO2  = KCT8103L CSD (chip enable, active-HIGH)
  *   GPIO5  = KCT8103L CTX (TX/RX select: HIGH=TX, LOW=RX/LNA)  ← V4.3 change
@@ -114,9 +114,11 @@
 		regulator-always-on;
 	};
 
-	/* No adc_ctrl power-domain node: it would claim GPIO37 (gpio1 pin 5) with
-	 * the opposite polarity and fight the vbat_enable regulator in board.overlay,
-	 * which is the actual per-read driver for the ADC divider enable. */
+	/* No adc_ctrl power-domain node: ADC_Ctrl is removed on the R8 and GPIO37
+	 * (gpio1 pin 5) is an octal-PSRAM pad, which must not be driven at all.
+	 * There is no vbat-enable regulator either -- the divider is permanently
+	 * connected, so ZephyrBoard's regulator lookup degrades to NULL by
+	 * design. See board.overlay's battery-ADC block. */
 
 	/* FEM LDO power supply — GPIO7 powers the KCT8103L LDO.
 	 * Must be HIGH before any radio operation. Keep always-on. */
@@ -143,8 +145,14 @@
  * adc0 is unit 1; the node labelled adc1 is unit 2 (= GPIO11 = SX1262 MISO).
  * The channel@0 config is required — without it adc_channel_setup_dt() fails and
  * getBattMilliVolts() returns 0 before ever performing a conversion. ADC_GAIN_1
- * (0 dB) with ADC_REF_INTERNAL (~1100 mV); the 100K/390K divider output for a
- * 3.0-4.2 V cell sits well inside range. */
+ * (0 dB) with ADC_REF_INTERNAL; the 390K/100K divider output for a 3.0-4.2 V
+ * cell sits well inside range.
+ *
+ * Do not read a full-scale figure into ADC_REF_INTERNAL here: on the S3 the
+ * 0 dB range tops out near 955 mV, not the 1100 mV of the classic ESP32, and
+ * assuming 1100 is half of why the sibling boards' multiplier reads ~22% high.
+ * board.overlay's vbat-mv-multiplier owns that number and states its
+ * derivation. */
 &adc0 {
 	status = "okay";
 	#address-cells = <1>;
