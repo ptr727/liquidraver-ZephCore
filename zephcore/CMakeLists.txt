@@ -353,6 +353,7 @@ target_sources(app PRIVATE
   # Captures the reset cause before anything consumes it; every role needs it
   # at boot, so it is never conditional.
   helpers/boot_info.c
+  helpers/HardwareReport.cpp
   helpers/oled_power.c
   helpers/fatal_reboot.c
   # LED master gate ("set leds on|off"). Always compiled: helpers/ui/ui_common.c
