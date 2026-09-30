@@ -104,9 +104,11 @@ xiao_esp32s3/esp32s3/procpu
 > **ThinkNode M7** (`thinknode_m7/esp32s3/procpu`): ESP32-S3 (8MB flash, 8MB
 > PSRAM) with LR1110 and a WCH CH390 SPI Ethernet controller, optionally PoE
 > powered. No display, GNSS, buzzer, battery or SD card. Not yet validated on
-> hardware — see the board README for the bring-up list. Ethernet is not wired
-> up yet; the board currently builds as a BLE companion with its console on
-> uart0 through the onboard CH343 bridge.
+> hardware — see the board README for the bring-up list. The companion is
+> reached over TCP on the wired link (port 5000, as every other ZephCore TCP
+> companion), beside BLE; the console is uart0 through the onboard CH343
+> bridge. The CH390 is driven by Zephyr's DM9051 driver through a ZephCore
+> patch that teaches it the register-compatible WCH part.
 >
 > **ThinkNode M9** (`thinknode_m9/esp32s3/procpu`): ESP32-S3 (16MB flash, 8MB
 > PSRAM) handheld with LR1110, ST7789 320x240 TFT, CC1167Q GPS, PCF8563 RTC,

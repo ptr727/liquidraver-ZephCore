@@ -18,6 +18,11 @@ west build -b thinknode_m7/esp32s3/procpu zephcore --pristine -- \
   -DEXTRA_CONF_FILE="boards/common/repeater.conf"
 ```
 
+The companion build serves the app over TCP on port 5000 on the wired link,
+beside BLE, so Home Assistant's MeshCore integration reaches it as an ordinary
+TCP companion. The Ethernet stack is added automatically because the board
+manifest declares `capabilities: ethernet: true`.
+
 Console is uart0 at 115200 through the on-board CH343 USB-UART bridge, which
 enumerates as `1a86:7522`. The ESP32-S3's native USB pads are not bonded to the
 connector, so there is no USB CDC companion on this board. There is also no reset
