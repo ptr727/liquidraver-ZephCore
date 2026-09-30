@@ -548,11 +548,14 @@ static mesh::ZephyrMillisecondClock ms_clock;
 static mesh::ZephyrRNG zephyr_rng;
 static SimpleMeshTables mesh_tables;
 static StaticPoolPacketManager packet_mgr;
-/* A WiFi companion on a PSRAM board keeps this object (its contacts table and
- * offline queue are ~110 KB) in PSRAM, so WiFi and BLE fit in internal DRAM.
- * Safe: only the main thread touches it, never an ISR or a flash operation,
- * and the SoC boot zeroes .ext_ram.bss before any constructor runs. */
-#if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_WIFI) && IS_ENABLED(CONFIG_ESP_SPIRAM)
+/* A networked companion on a PSRAM board keeps this object (its contacts table
+ * and offline queue are ~110 KB) in PSRAM, so the network stack and BLE fit in
+ * internal DRAM. Safe: only the main thread touches it, never an ISR or a
+ * flash operation, and the SoC boot zeroes .ext_ram.bss before any constructor
+ * runs. Ethernet needs this as much as WiFi: without it the wired companion
+ * spends 119 KB of the ESP32-S3's internal DRAM here and links at 95% full. */
+#if (IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_WIFI) || \
+     IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_ETHERNET)) && IS_ENABLED(CONFIG_ESP_SPIRAM)
 #define COMPANION_MESH_SECTION __attribute__((section(".ext_ram.bss.companion_mesh")))
 #else
 #define COMPANION_MESH_SECTION

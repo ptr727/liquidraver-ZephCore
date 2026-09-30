@@ -650,6 +650,9 @@ else()
   if(CONFIG_ZEPHCORE_COMPANION_ETHERNET)
     target_sources(app PRIVATE app/CompanionEthernet.cpp)
   endif()
+  if(CONFIG_NET_HOSTNAME_DYNAMIC)
+    target_sources(app PRIVATE helpers/net_hostname_label.c)
+  endif()
   # Headless build (e.g. native Linux): no display/buttons/buzzer source files
   # are compiled, but companion code calls ui_* unconditionally. Weak no-op
   # stubs satisfy the link.

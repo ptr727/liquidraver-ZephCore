@@ -10,6 +10,7 @@
 
 #include "CompanionEthernet.h"
 
+#include "../helpers/net_hostname_label.h"
 #include "../helpers/pm_sleep_guard.h"
 
 #include <zephyr/drivers/hwinfo.h>
@@ -18,6 +19,7 @@
 #include <zephyr/net/ethernet.h>
 #include <zephyr/net/ethernet_mgmt.h>
 #include <zephyr/net/dhcpv4.h>
+#include <zephyr/net/hostname.h>
 #include <zephyr/net/net_event.h>
 #include <zephyr/net/net_if.h>
 #include <zephyr/net/net_ip.h>
@@ -169,7 +171,6 @@ static void ipv4_event(struct net_mgmt_event_callback *cb, uint64_t event,
 
 void companion_ethernet_start(const NodePrefs &prefs)
 {
-	ARG_UNUSED(prefs);
 
 	s_iface = ethernet_iface();
 	if (!s_iface) {
@@ -187,6 +188,9 @@ void companion_ethernet_start(const NodePrefs &prefs)
 	 * address and a reservation misses on the boot after a reflash. */
 	set_stable_mac(s_iface);
 #endif
+
+	/* Before DHCP starts: the hostname rides in the DISCOVER. */
+	zc_net_set_hostname(prefs.node_name);
 
 	net_mgmt_init_event_callback(&s_iface_cb, iface_event,
 				     NET_EVENT_IF_UP | NET_EVENT_IF_DOWN);
@@ -218,6 +222,10 @@ bool companion_ethernet_cli(const char *command, char *reply)
 		} else {
 			strcpy(reply, "> (no lease)");
 		}
+		return true;
+	}
+	if (strcmp(command, "get eth.host") == 0) {
+		sprintf(reply, "> %s", net_hostname_get());
 		return true;
 	}
 	if (strcmp(command, "get eth.mac") == 0) {
