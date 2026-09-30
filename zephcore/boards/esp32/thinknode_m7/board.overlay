@@ -1,0 +1,65 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Elecrow ThinkNode M7 — ZephCore application hookup.
+ *
+ * The radio, buses and partitions are in the base DTS; this file adds only
+ * what the application layer consumes.
+ */
+
+/ {
+	aliases {
+		led0 = &status_led;
+		lora-tx-led = &tx_led;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		/* Both LEDs are wired active low. GPIO3 and GPIO46 are strapping
+		 * pins, so nothing may drive them before the strapping latch;
+		 * the gpio-leds driver runs at POST_KERNEL, well after it. */
+		status_led: led_0 {
+			gpios = <&gpio0 3 GPIO_ACTIVE_LOW>;
+			label = "Status";
+		};
+		tx_led: led_1 {
+			gpios = <&gpio1 14 GPIO_ACTIVE_LOW>;	/* GPIO46 */
+			label = "LoRa TX";
+		};
+	};
+};
+
+&i2c0 {
+	/* No device is fitted on the tested unit; the RTC socket exists on the
+	 * PCB and a missing chip is a clean scan, not an error. */
+	#include "../../common/rtc-i2c.dtsi"
+};
+
+/*
+ * Button on GPIO4. The Meshtastic variant drives it as a discrete active-low
+ * pull-up input while the Arduino MeshCore variant calls it an analog ladder;
+ * with a single button the two are indistinguishable. The channel is declared
+ * so the raw level can be read, but no key mapping is asserted until the
+ * thresholds are measured on hardware.
+ */
+&adc0 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/* GPIO4 = ADC1_CH3. The node labelled adc0 is ADC unit 1. */
+	channel@3 {
+		reg = <3>;
+		zephyr,gain = "ADC_GAIN_1_4";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+};
+
+/* ADC unit 2 is unused and shares hardware with WiFi. */
+&adc1 {
+	status = "disabled";
+};
+
+#include "../../common/filesystem.dtsi"

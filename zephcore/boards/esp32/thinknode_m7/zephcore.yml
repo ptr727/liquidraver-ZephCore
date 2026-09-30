@@ -1,0 +1,9 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+# No release: block yet — bring-up in progress (radio, LEDs, Ethernet unverified
+# on hardware). To publish, add:
+#   release: {roles: [companion]}
+#   catalog: {device: "Elecrow ThinkNode M7", maker: elecrow}
+#
+# No `wifi: true`: this board's network path is the wired CH390, and whether the
+# bare-die ESP32-S3 has a WiFi antenna fitted is unverified.
+target: thinknode_m7/esp32s3/procpu
