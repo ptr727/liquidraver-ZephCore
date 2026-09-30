@@ -49,6 +49,9 @@ LOG_MODULE_REGISTER(zephcore_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_WIFI)
 #include <app/CompanionWifi.h>
 #endif
+#if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_ETHERNET)
+#include <app/CompanionEthernet.h>
+#endif
 
 #if ZEPHCORE_USB_STACK
 #include <ZephyrUSBCDC.h>
@@ -776,6 +779,11 @@ static void companion_cli_exec(const char *line, uint32_t sender_timestamp,
 		return;
 	}
 #endif
+#if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_ETHERNET)
+	if (companion_ethernet_cli(line, reply)) {
+		return;
+	}
+#endif
 	companion_cli.setReplyHeaderUsed(reply_hdr_used);
 	companion_cli.handleCommand(sender_timestamp, line, reply);
 }
@@ -1167,7 +1175,11 @@ int main(void)
 #endif
 #if IS_ENABLED(CONFIG_ZEPHCORE_TRANSPORT_TCP)
 	tcp_companion_init(&link_cbs);
+#if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_ETHERNET) && !IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_WIFI)
+	interface_manager.addInterface(InterfaceType::Ethernet, &tcp_interface);
+#else
 	interface_manager.addInterface(InterfaceType::WiFi, &tcp_interface);
+#endif
 #endif
 
 	/* Enables every interface; the ble_disabled pref then turns BLE back off
@@ -1186,6 +1198,9 @@ int main(void)
 #endif
 #if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_WIFI) && defined(ZEPHCORE_LORA)
 	companion_wifi_start(companion_mesh.prefs);
+#endif
+#if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_ETHERNET) && defined(ZEPHCORE_LORA)
+	companion_ethernet_start(companion_mesh.prefs);
 #endif
 #if IS_ENABLED(CONFIG_BT)
 	if (bt_enable(bt_ready) != 0) {

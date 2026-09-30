@@ -9,6 +9,7 @@ native-Linux preset boards/linux_native/<preset>.conf carries a sibling
     target: rak4631                  # REQUIRED  west -b string, with qualifiers
     capabilities:
       wifi: true                     # WiFi companion: RAM for WiFi + BLE together
+      ethernet: true                 # wired MAC on board: TCP companion over the LAN
       light_sleep: true              # DIO1 on an RTC-wake-capable GPIO AND
                                      # validated on hardware (ESP32 repeaters)
     release:                         # absent = not published (bring-up)
@@ -50,7 +51,7 @@ PLATFORM_DIRS = {"nrf52840": "nrf52", "nrf54l": "nrf54l", "esp32": "esp32",
                  "mg24": "mg24", "stm32wl": "stm32wl"}
 ROLES = ("companion", "repeater", "room_server", "observer")
 KEYS = {"target", "capabilities", "release", "catalog", "linux"}
-CAPS = {"light_sleep", "wifi"}
+CAPS = {"light_sleep", "wifi", "ethernet"}
 CATALOG_KEYS = {"device", "maker", "new", "img", "own_img", "subtitle"}
 CAP_LINE = re.compile(r"^  (\w+): (true|false)\s*$", re.M)
 

@@ -7,3 +7,5 @@
 # No `wifi: true`: this board's network path is the wired CH390, and whether the
 # bare-die ESP32-S3 has a WiFi antenna fitted is unverified.
 target: thinknode_m7/esp32s3/procpu
+capabilities:
+  ethernet: true

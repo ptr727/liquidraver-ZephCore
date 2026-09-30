@@ -236,6 +236,15 @@ if(ZEPHCORE_PLATFORM STREQUAL "esp32")
     endif()
 endif()
 
+# Ethernet companion (app over TCP beside BLE and USB) on boards whose
+# zephcore.yml declares `capabilities: ethernet: true`. Outside the platform
+# block above: nothing about a wired MAC is Espressif-specific.
+if(ZEPHCORE_BUILD_ROLE STREQUAL "companion" AND ZEPHCORE_BOARD_ETHERNET
+   AND NOT "ethernet_companion" IN_LIST _user_conf_names)
+    zephcore_add_conf(${_zc}/ethernet_companion.conf)
+    message(STATUS "  Ethernet companion: auto-enabled (board declares ethernet)")
+endif()
+
 # ---- User extras last, so they override everything above ----
 foreach(_c IN LISTS ZEPHCORE_USER_CONFS)
     zephcore_add_conf("${_c}")
@@ -637,6 +646,9 @@ else()
     target_include_directories(app PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/adapters/wifi
     )
+  endif()
+  if(CONFIG_ZEPHCORE_COMPANION_ETHERNET)
+    target_sources(app PRIVATE app/CompanionEthernet.cpp)
   endif()
   # Headless build (e.g. native Linux): no display/buttons/buzzer source files
   # are compiled, but companion code calls ui_* unconditionally. Weak no-op

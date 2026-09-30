@@ -93,6 +93,37 @@
 	};
 };
 
+/*
+ * SPI3 — WCH CH390 Ethernet. 20 MHz: the part is rated 50 MHz typical and
+ * 72 MHz maximum at 3.3V (CH390DS1 v1.8), so the ceiling here is not the chip
+ * but the GPIO matrix, since these pads have no SPI3 IOMUX route. 20 MHz is
+ * proven on this board and is far more than the companion protocol needs.
+ */
+&spi3 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-0 = <&spim3_default>;
+	pinctrl-names = "default";
+
+	cs-gpios = <&gpio0 21 GPIO_ACTIVE_LOW>;
+
+	eth: ethernet@0 {
+		compatible = "wch,ch390";
+		reg = <0>;
+		spi-max-frequency = <20000000>;
+
+		/* GPIO45 is the VDD_SPI strapping pin and must read LOW at boot, or
+		 * the chip picks a 1.8V flash supply and the 3.3V flash browns out.
+		 * The driver programs the controller's INTCR polarity from these
+		 * flags, and active-high is INTCR's reset value, so the line idles
+		 * low both before and after the driver runs. Active-low would boot
+		 * once and then hang: the CH390 has no reset input, so it would keep
+		 * driving the pin high across a CPU-only reset. */
+		int-gpios = <&gpio1 13 GPIO_ACTIVE_HIGH>;	/* GPIO45 */
+	};
+};
+
 &gpio0 { status = "okay"; };
 &gpio1 { status = "okay"; };
 &wdt0 { status = "okay"; };

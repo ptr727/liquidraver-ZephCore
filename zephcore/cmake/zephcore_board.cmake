@@ -11,6 +11,7 @@
 #          ZEPHCORE_PLATFORM    nrf52 | nrf54l | esp32 | mg24 | stm32wl | linux | ""
 #          ZEPHCORE_BOARD_LIGHT_SLEEP  TRUE if the board manifest declares it
 #          ZEPHCORE_BOARD_WIFI         TRUE if the board manifest declares it
+#          ZEPHCORE_BOARD_ETHERNET     TRUE if the board manifest declares it
 #          zephcore_board_file(<out-var> <file-name>)
 #              absolute path of <file-name> inside the board dir, or "".
 
@@ -84,6 +85,7 @@ endif()
 # the exact two-space-indented `  <capability>: true|false` form this relies on.
 set(ZEPHCORE_BOARD_LIGHT_SLEEP FALSE)
 set(ZEPHCORE_BOARD_WIFI FALSE)
+set(ZEPHCORE_BOARD_ETHERNET FALSE)
 zephcore_board_file(_zb_manifest zephcore.yml)
 if(_zb_manifest)
     file(STRINGS "${_zb_manifest}" _zb_ls REGEX "^  light_sleep: true[ \t]*$")
@@ -93,5 +95,9 @@ if(_zb_manifest)
     file(STRINGS "${_zb_manifest}" _zb_wifi REGEX "^  wifi: true[ \t]*$")
     if(_zb_wifi)
         set(ZEPHCORE_BOARD_WIFI TRUE)
+    endif()
+    file(STRINGS "${_zb_manifest}" _zb_eth REGEX "^  ethernet: true[ \t]*$")
+    if(_zb_eth)
+        set(ZEPHCORE_BOARD_ETHERNET TRUE)
     endif()
 endif()

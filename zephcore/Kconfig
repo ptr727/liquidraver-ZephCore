@@ -477,6 +477,36 @@ config ZEPHCORE_COMPANION_WIFI
 	  `capabilities: wifi: true` (the ones with the RAM for WiFi and BLE
 	  together).
 
+config ZEPHCORE_COMPANION_ETHERNET
+	bool "Ethernet companion (app over TCP on the wired LAN)"
+	depends on ZEPHCORE_ROLE_COMPANION && NET_L2_ETHERNET
+	select ZEPHCORE_TRANSPORT_TCP
+	help
+	  Bring up the wired interface, take a DHCP lease, and serve the
+	  companion protocol over TCP on ZEPHCORE_TCP_PORT, beside BLE and USB:
+	  every connected transport is served (MultiSerialInterface).
+
+	  Turned on by boards/common/ethernet_companion.conf, which CMake adds
+	  to companion builds of boards whose zephcore.yml declares
+	  `capabilities: ethernet: true`.
+
+	  There is no configuration surface to match the wifi.* CLI: a wired
+	  link needs no credentials, and the address is the DHCP server's to
+	  decide.  The eth.* commands are read-only.
+
+config ZEPHCORE_COMPANION_ETHERNET_STABLE_MAC
+	bool "Derive the MAC address from the SoC device ID"
+	depends on ZEPHCORE_COMPANION_ETHERNET
+	default y
+	help
+	  Set the interface address from hwinfo_get_device_id() instead of
+	  keeping whatever the controller powered up with.  Without it the
+	  address is not stable across a power cycle, so a DHCP reservation
+	  stops matching and the node moves.
+
+	  On ESP32 the device ID is the factory efuse base MAC, and the
+	  Ethernet address is derived from it the way ESP-IDF derives its own.
+
 endmenu # Companion TCP Transport
 
 endif # ZEPHCORE_ROLE_COMPANION
