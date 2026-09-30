@@ -120,6 +120,8 @@ Verified on hardware 2026-09-30, on the board this port was written for.
 | Ethernet link | Up at 100 Mbps, agreed by the switch |
 | DHCP | Lease acquired |
 | Reachability | Ping 5/5 at 1.58 ms average; the companion's TCP port open from another host |
+| Companion protocol | `CMD_DEVICE_QUERY` over TCP answered `DEVICE_INFO`: model `ThinkNode M7`, version `1.17.6-zephcore` |
+| DHCP hostname in DNS | `518ce3cf.home.insanegenius.net` resolves and pings, some minutes after first boot |
 
 Getting there needed three fixes in the DM9051 driver patch: the PHY power-on
 has to be re-asserted after the MAC soft reset, the pre-transmit NSR poll must
@@ -127,6 +129,25 @@ not abort the frame when it times out, and the receive thread must not wait on
 the edge interrupt alone. Without the first there is no link at all; without
 the second nothing is ever transmitted; without the third the node completes
 DHCP and then answers nothing.
+
+## Connecting a companion app
+
+The MeshCore companion app's **"Connect via WiFi"** (TCP/Network) mode, pointed at
+this node's address on port 5000. The transport and framing are upstream
+MeshCore's `SerialWifiInterface`, so any TCP-capable MeshCore client works.
+
+**Only one TCP client at a time.** That matters for a node whose job is to serve
+Home Assistant: HA occupies the single TCP slot, so keep BLE enabled if you also
+want to configure the node from the phone app. Every connected transport is
+served at once (`MultiSerialInterface`), so BLE and TCP run in parallel and both
+see every frame.
+
+The BLE pairing passkey is `CONFIG_ZEPHCORE_BLE_PASSKEY`, **123456** by default.
+It is a compile-time constant, overridable per node through the `ble_pin` pref,
+and the device reports its current value in the `DEVICE_INFO` response. A fixed
+well-known passkey is worth thinking about on a node that sits powered on a
+shelf: `ble_off` in the prefs turns BLE advertising off once the node is
+configured.
 
 DHCP hostname: the node name goes out as DHCP option 12, sanitised to a DNS
 label. Verified end to end — the lease records `518ce3cf`, the switch shows it on
