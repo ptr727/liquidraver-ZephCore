@@ -1,0 +1,125 @@
+Support the WCH CH390 with the Davicom DM9051 driver.
+
+The CH390 is a 10/100 MAC and PHY in one SPI part whose register map is the
+DM9051's. Its identity registers are not: read off the part it reports vendor
+0x1C00 and product 0x9151, where eth_dm9051_check_id() demands 0x9051, so the
+driver rejects it at init and the interface never appears.
+
+Rather than duplicate a register-compatible driver, this carries the expected
+product ID per instance and runs the instance macro once per compatible, the
+same way drivers/ethernet/eth_adin2111.c serves the ADIN2111 and ADIN1110. The
+DM9051 path is unchanged in behaviour.
+
+ESP-IDF has the same gate in its own dm9051 driver, which is why Espressif
+ships the CH390 as a separate registry component; Zephyr has no equivalent, so
+the second compatible is the smaller change here.
+
+The binding lives in patches/zephyr-new/dts/bindings/ethernet/wch,ch390.yaml.
+`wch` is already a registered vendor prefix upstream.
+
+diff --git a/drivers/ethernet/Kconfig.dm9051 b/drivers/ethernet/Kconfig.dm9051
+index b3f13fab327..b61c0fb32ef 100644
+--- a/drivers/ethernet/Kconfig.dm9051
++++ b/drivers/ethernet/Kconfig.dm9051
+@@ -4,12 +4,13 @@
+ # SPDX-License-Identifier: Apache-2.0
+ 
+ menuconfig ETH_DM9051
+-	bool "Davicom DM9051 Ethernet Controller"
++	bool "Davicom DM9051 / WCH CH390 Ethernet Controller"
+ 	default y
+-	depends on DT_HAS_DAVICOM_DM9051_ENABLED
++	depends on DT_HAS_DAVICOM_DM9051_ENABLED || DT_HAS_WCH_CH390_ENABLED
+ 	select SPI
+ 	help
+-	  Davicom DM9051 Ethernet Controller with SPI Interface
++	  Davicom DM9051 Ethernet Controller with SPI Interface, and the
++	  register-compatible WCH CH390.
+ 
+ config ETH_DM9051_RX_THREAD_STACK_SIZE
+ 	int "Stack size for internal incoming packet handler"
+diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
+index a8406e69fae..59f7db283f2 100644
+--- a/drivers/ethernet/eth_dm9051.c
++++ b/drivers/ethernet/eth_dm9051.c
+@@ -36,6 +36,10 @@ LOG_MODULE_REGISTER(eth_dm9051, CONFIG_ETHERNET_LOG_LEVEL);
+ /* DM9051 Product ID */
+ #define DM9051_ID			0x9051
+ 
++/* CH390 Product ID. WCH's part is register-compatible with the DM9051 but
++ * reports its own identity (vendor 0x1C00), so only the ID gate differs. */
++#define CH390_ID			0x9151
++
+ /* DM9051 PHY Address */
+ #define DM9051_PHY_ADDR			1
+ 
+@@ -177,6 +181,7 @@ LOG_MODULE_REGISTER(eth_dm9051, CONFIG_ETHERNET_LOG_LEVEL);
+ struct eth_dm9051_config {
+ 	struct net_eth_mac_config mac_cfg;
+ 	struct gpio_dt_spec gpio_int;
++	uint16_t chip_id;
+ 	const struct device *phy_dev;
+ 	struct spi_dt_spec spi;
+ };
+@@ -313,6 +318,7 @@ static inline int eth_dm9051_spi_write_regs(const struct device *dev, uint8_t re
+ 
+ static int eth_dm9051_check_id(const struct device *dev)
+ {
++	const struct eth_dm9051_config *config = dev->config;
+ 	uint16_t pid;
+ 	int ret;
+ 
+@@ -323,8 +329,9 @@ static int eth_dm9051_check_id(const struct device *dev)
+ 	}
+ 
+ 	/* Check product ID */
+-	if (sys_le16_to_cpu(pid) != DM9051_ID) {
+-		LOG_ERR("%s: Found ID: %04x, Expected ID: %04x\n", dev->name, pid, DM9051_ID);
++	if (sys_le16_to_cpu(pid) != config->chip_id) {
++		LOG_ERR("%s: Found ID: %04x, Expected ID: %04x\n", dev->name, pid,
++			config->chip_id);
+ 		return -EIO;
+ 	}
+ 
+@@ -987,24 +994,32 @@ static int eth_dm9051_init(const struct device *dev)
+ 	return 0;
+ }
+ 
+-#define ETH_DM9051_INIT(inst)									\
+-	DEVICE_DECLARE(eth_dm9051_phy_##inst);							\
++#define ETH_DM9051_INITIALIZE(inst, name, id)							\
++	DEVICE_DECLARE(name##_phy_##inst);							\
+ 												\
+-	static struct eth_dm9051_data eth_dm9051_data_##inst;					\
++	static struct eth_dm9051_data name##_data_##inst;					\
+ 												\
+-	static const struct eth_dm9051_config eth_dm9051_config_##inst = {			\
++	static const struct eth_dm9051_config name##_config_##inst = {			\
+ 		.mac_cfg = NET_ETH_MAC_DT_INST_CONFIG_INIT(inst),				\
+ 		.gpio_int = GPIO_DT_SPEC_INST_GET(inst, int_gpios),				\
+-		.phy_dev = DEVICE_GET(eth_dm9051_phy_##inst),					\
++		.chip_id = (id),								\
++		.phy_dev = DEVICE_GET(name##_phy_##inst),					\
+ 		.spi = SPI_DT_SPEC_INST_GET(inst, SPI_WORD_SET(8)),				\
+ 	};											\
+ 												\
+-	ETH_NET_DEVICE_DT_INST_DEFINE(inst, eth_dm9051_init, NULL, &eth_dm9051_data_##inst,	\
+-				      &eth_dm9051_config_##inst, CONFIG_ETH_INIT_PRIORITY,	\
++	ETH_NET_DEVICE_DT_INST_DEFINE(inst, eth_dm9051_init, NULL, &name##_data_##inst,		\
++				      &name##_config_##inst, CONFIG_ETH_INIT_PRIORITY,		\
+ 				      &eth_dm9051_api, NET_ETH_MTU);				\
+ 												\
+-	DEVICE_DEFINE(eth_dm9051_phy_##inst, DEVICE_DT_NAME(DT_DRV_INST(inst)) "_phy",		\
+-		      NULL, NULL, &eth_dm9051_data_##inst, &eth_dm9051_config_##inst,		\
++	DEVICE_DEFINE(name##_phy_##inst, DEVICE_DT_NAME(DT_DRV_INST(inst)) "_phy",		\
++		      NULL, NULL, &name##_data_##inst, &name##_config_##inst,			\
+ 		      POST_KERNEL, CONFIG_ETH_INIT_PRIORITY, &ethphy_dm9051_api);
+ 
++#define ETH_DM9051_INIT(inst) ETH_DM9051_INITIALIZE(inst, eth_dm9051, DM9051_ID)
+ DT_INST_FOREACH_STATUS_OKAY(ETH_DM9051_INIT)
++
++#undef DT_DRV_COMPAT
++#define DT_DRV_COMPAT	wch_ch390
++
++#define ETH_CH390_INIT(inst) ETH_DM9051_INITIALIZE(inst, eth_ch390, CH390_ID)
++DT_INST_FOREACH_STATUS_OKAY(ETH_CH390_INIT)
