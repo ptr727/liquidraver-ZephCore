@@ -23,10 +23,11 @@ beside BLE, so Home Assistant's MeshCore integration reaches it as an ordinary
 TCP companion. The Ethernet stack is added automatically because the board
 manifest declares `capabilities: ethernet: true`.
 
-Console is uart0 at 115200 through the on-board CH343 USB-UART bridge, which
-enumerates as `1a86:7522`. The ESP32-S3's native USB pads are not bonded to the
-connector, so there is no USB CDC companion on this board. There is also no reset
-button: reset by pulsing DTR/RTS or by power cycling.
+Console is uart0 at 115200 through an on-board WCH USB-UART bridge, reported
+elsewhere as enumerating `1a86:7522`; confirm the id on the hardware rather than
+trusting it. The ESP32-S3's native USB pads are not bonded to the connector, so
+there is no USB CDC companion on this board. There is also no reset button:
+reset by pulsing DTR/RTS or by power cycling.
 
 ## Pin map
 
@@ -70,10 +71,18 @@ to something on this board.
 GPIO45 is VDD_SPI and must read LOW at boot, or the chip selects a 1.8 V flash
 supply and the 3.3 V flash browns out. It carries the CH390's interrupt, and the
 driver programs the controller's interrupt polarity from the devicetree flags, so
-`int-gpios` must be `GPIO_ACTIVE_HIGH`: that is the controller's reset value and
-it idles the line low. Active-low would work on the first cold boot and then hang
-every warm one, because the CH390 has no reset line and would keep driving the
-pin high across a CPU-only reset.
+`int-gpios` is `GPIO_ACTIVE_HIGH`: that is the controller's reset value and idles
+the line low. Active-low would work on the first cold boot and hang every warm
+one, since the CH390 has no reset line and would keep the pin asserted across a
+CPU-only reset.
+
+That settles the idle case but not the whole problem. The driver unmasks RX, TX
+and link-change interrupts and clears the status register only from its RX
+thread, so the CH390 really does drive GPIO45 high while an interrupt is
+pending, and a reset landing in that window presents a high strap to the next
+boot. Three vendor firmwares wire this same pin to this same interrupt, which
+suggests the board forces VDD_SPI by efuse and makes the strap irrelevant, but
+that is inference rather than evidence. Read the efuse at bring-up.
 
 GPIO3 and GPIO46 drive the two LEDs. The gpio-leds driver runs at POST_KERNEL,
 long after the strapping latch, so this is safe.
@@ -100,8 +109,12 @@ can be read, but no key mapping is asserted until the thresholds are measured.
 6. CH390 reports product ID `0x9151` and the link comes up at 100 Mbps.
 7. A DHCP lease is acquired, and the MAC address is unchanged across a power
    cycle.
-8. Ten consecutive DTR-pulse resets each produce a boot banner, confirming the
-   interrupt polarity does not hold GPIO45 high.
+8. `espefuse.py summary` says whether VDD_SPI is forced. If it is not, the
+   GPIO45 strap is live and step 9 is the one that matters.
+9. Ten consecutive DTR-pulse resets each produce a boot banner. Run this with
+   the link up and carrying traffic, for instance a flood ping from another
+   host: an idle interface asserts no interrupt, so a quiet board would pass
+   this step while still being able to fail in service.
 
 ## Not ported
 

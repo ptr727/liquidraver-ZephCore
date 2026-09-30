@@ -29,12 +29,6 @@
 	};
 };
 
-&i2c0 {
-	/* No device is fitted on the tested unit; the RTC socket exists on the
-	 * PCB and a missing chip is a clean scan, not an error. */
-	#include "../../common/rtc-i2c.dtsi"
-};
-
 /*
  * Button on GPIO4. The Meshtastic variant drives it as a discrete active-low
  * pull-up input while the Arduino MeshCore variant calls it an analog ladder;

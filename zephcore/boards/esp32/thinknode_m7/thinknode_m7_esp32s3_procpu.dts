@@ -96,8 +96,9 @@
 /*
  * SPI3 — WCH CH390 Ethernet. 20 MHz: the part is rated 50 MHz typical and
  * 72 MHz maximum at 3.3V (CH390DS1 v1.8), so the ceiling here is not the chip
- * but the GPIO matrix, since these pads have no SPI3 IOMUX route. 20 MHz is
- * proven on this board and is far more than the companion protocol needs.
+ * but the GPIO matrix, since these pads have no SPI3 IOMUX route. 20 MHz ran
+ * clean on this hardware under another firmware and is far more than the
+ * companion protocol needs; it is unverified under ZephCore.
  */
 &spi3 {
 	status = "okay";
@@ -115,11 +116,21 @@
 
 		/* GPIO45 is the VDD_SPI strapping pin and must read LOW at boot, or
 		 * the chip picks a 1.8V flash supply and the 3.3V flash browns out.
+		 *
 		 * The driver programs the controller's INTCR polarity from these
-		 * flags, and active-high is INTCR's reset value, so the line idles
-		 * low both before and after the driver runs. Active-low would boot
-		 * once and then hang: the CH390 has no reset input, so it would keep
-		 * driving the pin high across a CPU-only reset. */
+		 * flags. Active-high is INTCR's reset value and idles the line low,
+		 * so it is the only defensible choice here; active-low would idle it
+		 * high and strand the board after the first boot, because the CH390
+		 * has no reset input and keeps its polarity across a CPU-only reset.
+		 *
+		 * It does not make the pin safe, only quiet when idle. The driver
+		 * unmasks RX, TX, link-change and address-overflow, and clears ISR
+		 * only from its RX thread, so the CH390 does drive this pin high
+		 * while an interrupt is pending. A reset landing in that window
+		 * presents a high strap to the next boot. Whether that matters
+		 * depends on whether VDD_SPI is forced by efuse on this board, which
+		 * the three vendor firmwares that also wire GPIO45 to this interrupt
+		 * suggest but do not prove. Check it with espefuse at bring-up. */
 		int-gpios = <&gpio1 13 GPIO_ACTIVE_HIGH>;	/* GPIO45 */
 	};
 };
