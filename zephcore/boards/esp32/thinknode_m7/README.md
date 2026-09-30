@@ -23,9 +23,10 @@ beside BLE, so Home Assistant's MeshCore integration reaches it as an ordinary
 TCP companion. The Ethernet stack is added automatically because the board
 manifest declares `capabilities: ethernet: true`.
 
-Console is uart0 at 115200 through an on-board WCH USB-UART bridge, reported
-elsewhere as enumerating `1a86:7522`; confirm the id on the hardware rather than
-trusting it. The ESP32-S3's native USB pads are not bonded to the connector, so
+Console is uart0 at 115200 through an on-board WCH USB-UART bridge, which
+enumerates as `1a86:7522` and binds `ch341-uart`, giving `/dev/ttyUSB0`. Its
+auto-reset circuit works, so esptool's `--before default-reset` needs no
+buttons. The ESP32-S3's native USB pads are not bonded to the connector, so
 there is no USB CDC companion on this board. There is also no reset button:
 reset by pulsing DTR/RTS or by power cycling.
 
@@ -76,13 +77,17 @@ the line low. Active-low would work on the first cold boot and hang every warm
 one, since the CH390 has no reset line and would keep the pin asserted across a
 CPU-only reset.
 
-That settles the idle case but not the whole problem. The driver unmasks RX, TX
+That settles the idle case but not the whole problem: the driver unmasks RX, TX
 and link-change interrupts and clears the status register only from its RX
 thread, so the CH390 really does drive GPIO45 high while an interrupt is
-pending, and a reset landing in that window presents a high strap to the next
-boot. Three vendor firmwares wire this same pin to this same interrupt, which
-suggests the board forces VDD_SPI by efuse and makes the strap irrelevant, but
-that is inference rather than evidence. Read the efuse at bring-up.
+pending, and a reset landing in that window would present a high strap to the
+next boot.
+
+On this board it does not matter, and that is measured rather than assumed.
+`espefuse.py summary` reports `VDD_SPI_FORCE = True` with
+`VDD_SPI_TIEH = VDD3P3_RTC_IO`, so the flash supply is fixed at 3.3 V from
+efuse and the GPIO45 strap is ignored. Re-read the efuse before assuming the
+same of another unit.
 
 GPIO3 and GPIO46 drive the two LEDs. The gpio-leds driver runs at POST_KERNEL,
 long after the strapping latch, so this is safe.
@@ -94,27 +99,32 @@ the Arduino MeshCore variant calls it an analog ladder. With a single button the
 two readings are indistinguishable. The ADC channel is declared so the raw level
 can be read, but no key mapping is asserted until the thresholds are measured.
 
-## Bring-up verification list
+## Bring-up results
 
-1. Console on `/dev/ttyUSB0` at 115200 shows the Zephyr banner and the ZephCore
-   startup line.
-2. Boot log reports 8 MB flash and 8 MB octal PSRAM. A PSRAM init failure here
-   means the fitted part is quad, not octal.
-3. LR11xx init reports `HW 0x22` and `Type 0x01`. Note that units ship with radio
-   firmware `0x0303`, which is exactly the driver's minimum for `SetLoRaSyncWord`.
-4. Green LED blinks the heartbeat and the blue LED follows LoRa TX, both lit when
-   driven low. The board still boots after the LEDs have been driven.
-5. The node transmits and a known-good peer sees it. This is the real test of
-   whether the `0x0303` radio firmware honours the sync word.
-6. CH390 reports product ID `0x9151` and the link comes up at 100 Mbps.
-7. A DHCP lease is acquired, and the MAC address is unchanged across a power
-   cycle.
-8. `espefuse.py summary` says whether VDD_SPI is forced. If it is not, the
-   GPIO45 strap is live and step 9 is the one that matters.
-9. Ten consecutive DTR-pulse resets each produce a boot banner. Run this with
-   the link up and carrying traffic, for instance a flood ping from another
-   host: an idle interface asserts no interrupt, so a quiet board would pass
-   this step while still being able to fail in service.
+Verified on hardware 2026-09-30, on the board this port was written for.
+
+| Step | Result |
+|---|---|
+| Console on `/dev/ttyUSB0` at 115200 | Zephyr banner and ZephCore startup |
+| Flash and PSRAM | 8 MB flash; `octal_psram density 0x03 (64 Mbit)`, AP vendor, 8 MB, so octal is right |
+| VDD_SPI strap | `VDD_SPI_FORCE = True`, `TIEH = 3.3 V`: the GPIO45 strap is overridden |
+| LR1110 identity | `HW:0x22 Type:0x01 FW:0x0303`; RF switch `en=0x03 rx=0x01 tx=0x03 txhp=0x02` |
+| Radio configured | `freq=927875008 bw=62 sf=7 cr=5 pwr=-9` |
+| Radio receive | Discovered real nodes, so the sync word is honoured on FW `0x0303` |
+| Ethernet controller | CH390 `Found ID: 9151`; address set to the efuse base MAC plus 3 |
+| Ethernet link | Up at 100 Mbps, agreed by the switch |
+| DHCP | Lease acquired |
+| Reachability | Ping 5/5 at 1.58 ms average; the companion's TCP port open from another host |
+
+Getting there needed three fixes in the DM9051 driver patch: the PHY power-on
+has to be re-asserted after the MAC soft reset, the pre-transmit NSR poll must
+not abort the frame when it times out, and the receive thread must not wait on
+the edge interrupt alone. Without the first there is no link at all; without
+the second nothing is ever transmitted; without the third the node completes
+DHCP and then answers nothing.
+
+Not yet exercised: sustained throughput, a long run on PoE alone, the GPIO4
+button ladder, and the Home Assistant integration itself.
 
 ## Not ported
 

@@ -1,24 +1,48 @@
-Support the WCH CH390 with the Davicom DM9051 driver.
+Support the WCH CH390 with the Davicom DM9051 driver, and fix three defects
+that kept it from passing traffic.
 
 The CH390 is a 10/100 MAC and PHY in one SPI part whose register map is the
-DM9051's. Its identity registers are not: read off the part it reports vendor
-0x1C00 and product 0x9151, where eth_dm9051_check_id() demands 0x9051, so the
-driver rejects it at init and the interface never appears.
+DM9051's. Its identity registers are not: it reports vendor 0x1C00 and product
+0x9151 where eth_dm9051_check_id() demands 0x9051, so the driver rejects it at
+init and the interface never appears. Rather than duplicate a register
+compatible driver, the expected product ID is carried per instance and the
+instance macro runs once per compatible, the way drivers/ethernet/eth_adin2111.c
+already serves the ADIN2111 and the ADIN1110.
 
-Rather than duplicate a register-compatible driver, this carries the expected
-product ID per instance and runs the instance macro once per compatible, the
-same way drivers/ethernet/eth_adin2111.c serves the ADIN2111 and ADIN1110. The
-DM9051 path is unchanged in behaviour.
+Accepting the part was not enough to make it work. Three further defects,
+each found and then confirmed fixed on an Elecrow ThinkNode M7 with a CH390:
 
-ESP-IDF has the same gate in its own dm9051 driver, which is why Espressif
-ships the CH390 as a separate registry component; Zephyr has no equivalent, so
-the second compatible is the smaller change here.
+1. The soft reset in hw_start() returns GPR to its reset default, which on
+   this part leaves the PHY powered down. MDIO still answers, so the PHY
+   reports itself healthy, auto-negotiation-capable and advertising 10/100,
+   while the line side stays dark: auto-negotiation never completes and the
+   link partner ability register stays empty. Re-asserting GPR after the reset
+   brings the link up.
+
+2. The pre-transmit NSR poll waits for a TX-end bit that is only set once a
+   transmit has completed, and treats its timeout as fatal. On a freshly
+   started chip no transmit has ever completed, so every frame is aborted
+   before a byte is written, and TX-end can never be set because no transmit
+   ever happens. The interface silently transmits nothing. With this fixed the
+   node completes DHCP.
+
+3. The receive thread waits on the interrupt alone, but the pin is
+   edge-triggered while the controller drives it from a level. A new event
+   setting ISR before the thread clears it leaves the line asserted with no
+   fresh edge, and receive stalls permanently. The node completed DHCP and
+   then answered neither ICMP nor TCP. Bounding the wait leaves interrupts as
+   the fast path and makes the stall self-healing.
+
+Defects 2 and 3 are not CH390-specific and look like they affect the DM9051
+equally; no DM9051 board exists in-tree to confirm that against.
+
+Verified on hardware: link up at 100 Mbps, DHCP lease acquired, ping 3/3 at
+1.9 ms average and the companion's TCP port reachable from another host.
 
 The binding lives in patches/zephyr-new/dts/bindings/ethernet/wch,ch390.yaml.
 `wch` is already a registered vendor prefix upstream.
 
 diff --git a/drivers/ethernet/Kconfig.dm9051 b/drivers/ethernet/Kconfig.dm9051
-index b3f13fab327..b61c0fb32ef 100644
 --- a/drivers/ethernet/Kconfig.dm9051
 +++ b/drivers/ethernet/Kconfig.dm9051
 @@ -4,12 +4,13 @@
@@ -39,10 +63,9 @@ index b3f13fab327..b61c0fb32ef 100644
  config ETH_DM9051_RX_THREAD_STACK_SIZE
  	int "Stack size for internal incoming packet handler"
 diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
-index a8406e69fae..59f7db283f2 100644
 --- a/drivers/ethernet/eth_dm9051.c
 +++ b/drivers/ethernet/eth_dm9051.c
-@@ -36,6 +36,10 @@ LOG_MODULE_REGISTER(eth_dm9051, CONFIG_ETHERNET_LOG_LEVEL);
+@@ -36,6 +36,10 @@
  /* DM9051 Product ID */
  #define DM9051_ID			0x9051
  
@@ -53,7 +76,7 @@ index a8406e69fae..59f7db283f2 100644
  /* DM9051 PHY Address */
  #define DM9051_PHY_ADDR			1
  
-@@ -177,6 +181,7 @@ LOG_MODULE_REGISTER(eth_dm9051, CONFIG_ETHERNET_LOG_LEVEL);
+@@ -177,6 +181,7 @@
  struct eth_dm9051_config {
  	struct net_eth_mac_config mac_cfg;
  	struct gpio_dt_spec gpio_int;
@@ -61,7 +84,7 @@ index a8406e69fae..59f7db283f2 100644
  	const struct device *phy_dev;
  	struct spi_dt_spec spi;
  };
-@@ -313,6 +318,7 @@ static inline int eth_dm9051_spi_write_regs(const struct device *dev, uint8_t re
+@@ -313,6 +318,7 @@
  
  static int eth_dm9051_check_id(const struct device *dev)
  {
@@ -69,7 +92,7 @@ index a8406e69fae..59f7db283f2 100644
  	uint16_t pid;
  	int ret;
  
-@@ -323,8 +329,9 @@ static int eth_dm9051_check_id(const struct device *dev)
+@@ -323,8 +329,9 @@
  	}
  
  	/* Check product ID */
@@ -81,7 +104,67 @@ index a8406e69fae..59f7db283f2 100644
  		return -EIO;
  	}
  
-@@ -987,24 +994,32 @@ static int eth_dm9051_init(const struct device *dev)
+@@ -399,6 +406,22 @@
+ 
+ 	k_usleep(10);
+ 
++	/*
++	 * Re-assert the PHY power-on. The soft reset above returns GPR to its
++	 * reset default, and on the CH390 that default leaves the PHY powered
++	 * down: MDIO keeps answering, so the PHY reports itself healthy and
++	 * auto-negotiation-capable, while the line side stays dark and the link
++	 * never comes up. Measured on an Elecrow ThinkNode M7, where the link
++	 * partner's ability register stayed empty until this write was added.
++	 * The 100 ms settle is what WCH's own driver allows.
++	 */
++	ret = eth_dm9051_spi_write_reg(dev, DM9051_GPR, DM9051_GPR_PHY_ON);
++	if (ret < 0) {
++		return ret;
++	}
++
++	k_msleep(100);
++
+ 	/* Set gpio pin polarity based on gpio dt flags */
+ 	ret = eth_dm9051_spi_write_reg(dev, DM9051_INTCR,
+ 				       (config->gpio_int.dt_flags & GPIO_ACTIVE_LOW) > 0 ?
+@@ -451,8 +474,16 @@
+ 
+ 	k_mutex_lock(&data->spi_lock, K_FOREVER);
+ 
++	/*
++	 * Best-effort wait for an in-flight transmit; a timeout is not an error.
++	 * NSR's TX-end bits stay clear until a transmit has completed, so on a
++	 * freshly started chip this poll never passes, and treating that as a
++	 * failure aborts every frame before a byte is written. TX-end can then
++	 * never be set, because no transmit ever happens, and the interface
++	 * silently transmits nothing for the life of the boot.
++	 */
+ 	ret = eth_dm9051_nsr_poll(dev, DM9051_NSR_POLL_TIMEOUT);
+-	if (ret < 0) {
++	if (ret < 0 && ret != -ETIMEDOUT) {
+ 		goto out_spi_unlock;
+ 	}
+ 
+@@ -679,7 +710,17 @@
+ 	data = dev->data;
+ 
+ 	while (true) {
+-		k_sem_take(&data->int_event, K_FOREVER);
++		/*
++		 * Wait for the interrupt, but never only for it. The pin is
++		 * edge-triggered while the controller drives it from a level:
++		 * when a new event sets ISR before the thread clears it, the
++		 * line stays asserted, no fresh edge arrives and receive stalls
++		 * for good. Observed on a CH390, where the interface completed
++		 * DHCP and then answered nothing. The poll bounds that stall
++		 * instead of leaving it permanent; interrupts still deliver
++		 * immediately when they arrive.
++		 */
++		(void)k_sem_take(&data->int_event, K_MSEC(50));
+ 
+ 		ret = eth_dm9051_spi_read_reg(dev, DM9051_ISR, &isr);
+ 		if (ret < 0) {
+@@ -987,24 +1028,32 @@
  	return 0;
  }
  
