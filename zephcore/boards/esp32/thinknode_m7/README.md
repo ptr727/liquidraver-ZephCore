@@ -23,10 +23,15 @@ beside BLE, so Home Assistant's MeshCore integration reaches it as an ordinary
 TCP companion. The Ethernet stack is added automatically because the board
 manifest declares `capabilities: ethernet: true`.
 
-Console is uart0 at 115200 through an on-board WCH USB-UART bridge, which
-enumerates as `1a86:7522` and binds `ch341-uart`, giving `/dev/ttyUSB0`. Its
-auto-reset circuit works, so esptool's `--before default-reset` needs no
-buttons. The ESP32-S3's native USB pads are not bonded to the connector, so
+Console is uart0 at 115200 through a dedicated **CH340K** bridge, which enumerates
+as `1a86:7522`, binds `ch341-uart` and gives `/dev/ttyUSB0`. Its auto-reset circuit
+works, so esptool's `--before default-reset` needs no buttons.
+
+The bridge is not wired to the ESP32-S3's own USB pads, which cuts both ways. The
+USB identity never changes with firmware or role, so there is no re-binding to do
+and none of the identity churn native-USB ZephCore boards cause. But there is no
+JTAG and no USB CDC, so no hardware debugger and no USB companion transport: uart0
+is the only console, and the wired companion path has to be Ethernet. The ESP32-S3's native USB pads are not bonded to the connector, so
 there is no USB CDC companion on this board. There is also no reset button:
 reset by pulsing DTR/RTS or by power cycling.
 
@@ -123,8 +128,27 @@ the edge interrupt alone. Without the first there is no link at all; without
 the second nothing is ever transmitted; without the third the node completes
 DHCP and then answers nothing.
 
+DHCP hostname: the node name goes out as DHCP option 12, sanitised to a DNS
+label. Verified end to end — the lease records `518ce3cf`, the switch shows it on
+the port, and the router resolves `518ce3cf.home.insanegenius.net`. Allow some
+minutes after first boot before the name resolves.
+
 Not yet exercised: sustained throughput, a long run on PoE alone, the GPIO4
 button ladder, and the Home Assistant integration itself.
+
+### Known issue: the link flaps
+
+The link drops and recovers roughly once every couple of minutes. Measured over
+150 s: up at 2.3 s, DHCP bound at 6.4 s, down at 42.6 s, up again 1.7 s later,
+re-bound at 49.4 s. It always recovers on its own and DHCP re-binds to the same
+address, so the node stays usable, but it is not understood and it is not
+acceptable for a node meant to sit on a shelf.
+
+Not yet separated: whether this is the PHY, the switch renegotiating PoE class,
+or the driver's link-change handling. The switch reports the port as PoE+ at
+100 Mbps throughout. Worth noting that slow DNS registration has previously been
+a symptom of a half-working link rather than of propagation delay, so this is the
+first thing to rule out if a name is slow to appear.
 
 ## Not ported
 
