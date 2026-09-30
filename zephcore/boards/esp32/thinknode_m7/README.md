@@ -132,11 +132,22 @@ DHCP and then answers nothing.
 
 ## Connecting a companion app
 
-The MeshCore companion app's **"Connect via WiFi"** (TCP/Network) mode, pointed at
-this node's address on port 5000. The transport and framing are upstream
-MeshCore's `SerialWifiInterface`, so any TCP-capable MeshCore client works.
+The transport and framing are upstream MeshCore's `SerialWifiInterface`, so any
+TCP-capable MeshCore client works. Two that do:
 
-**Only one TCP client at a time.** That matters for a node whose job is to serve
+```bash
+# meshcore-cli, verified against this board
+uvx --from meshcore-cli meshcore-cli -t <node-address> -p 5000 infos
+```
+
+and the MeshCore companion app's **"Connect via WiFi"** (TCP/Network) mode,
+pointed at the node's address on port 5000.
+
+Note `meshcore-cli` prints `tx_power` unsigned, so a configured -9 dBm reads as
+`247`. That is the CLI's formatting, not the node's setting.
+
+**Only one TCP client at a time** — the transport logs `Second client rejected
+(already connected)` and closes the second connection. That matters for a node whose job is to serve
 Home Assistant: HA occupies the single TCP slot, so keep BLE enabled if you also
 want to configure the node from the phone app. Every connected transport is
 served at once (`MultiSerialInterface`), so BLE and TCP run in parallel and both
