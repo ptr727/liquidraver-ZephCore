@@ -13,6 +13,10 @@
 
 LOG_MODULE_REGISTER(zephcore_hostname, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
+/* Longer than any node name the protocol carries; only a bound, not a limit. */
+#define NODE_NAME_SCAN_MAX      128
+#define FALLBACK_HOSTNAME       "zephcore"
+
 void zc_net_set_hostname(const char *name)
 {
 #if IS_ENABLED(CONFIG_NET_HOSTNAME_DYNAMIC)
@@ -28,7 +32,13 @@ void zc_net_set_hostname(const char *name)
 	size_t n = 0;
 	bool prev_hyphen = true;        /* drops leading hyphens */
 
-	for (size_t i = 0; name != NULL && name[i] != '\0' && n < sizeof(host) - 1; i++) {
+	/* Bound the input as well as the output: a run of characters that all
+	 * sanitise away advances neither n nor prev_hyphen, so a scan bounded
+	 * only by the output index would walk forward until it happened to
+	 * find a NUL. */
+	const size_t name_len = (name != NULL) ? strnlen(name, NODE_NAME_SCAN_MAX) : 0;
+
+	for (size_t i = 0; i < name_len && n < sizeof(host) - 1; i++) {
 		unsigned char c = (unsigned char)name[i];
 
 		if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
@@ -49,10 +59,14 @@ void zc_net_set_hostname(const char *name)
 	host[n] = '\0';
 
 	if (n == 0) {
-		/* Nothing survived. A name that could collide beats no name at
-		 * all, and renaming the node fixes it. */
-		strcpy(host, "zephcore");
-		n = strlen(host);
+		/* Nothing survived, which an all-emoji or non-Latin node name
+		 * does routinely. A name that could collide beats no name at
+		 * all, and renaming the node fixes it. Copied with a bound
+		 * because the buffer is sized from Kconfig and can be shorter
+		 * than this literal. */
+		n = MIN(strlen(FALLBACK_HOSTNAME), sizeof(host) - 1);
+		memcpy(host, FALLBACK_HOSTNAME, n);
+		host[n] = '\0';
 	}
 
 	int rc = net_hostname_set(host, n);

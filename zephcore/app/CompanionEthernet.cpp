@@ -36,9 +36,34 @@ static struct net_mgmt_event_callback s_ipv4_cb;
 static struct net_if *s_iface;
 static volatile bool s_dhcp_bound;
 
+/*
+ * Not net_if_get_first_by_type(ETHERNET) on its own: a WiFi interface
+ * registers with ETHERNET_L2 too (the ESP32 driver does), so on a board
+ * carrying both that lookup can return the WiFi netif, and this would then
+ * rewrite its MAC and run DHCP on it while the wired controller never gets an
+ * address. Which one comes first is link order, so it is not even stable.
+ */
+static bool iface_is_wired_ethernet(struct net_if *iface)
+{
+	return iface != NULL && net_if_l2(iface) == &NET_L2_GET_NAME(ETHERNET) &&
+	       !net_if_is_wifi(iface);
+}
+
+static void pick_wired_iface(struct net_if *iface, void *user_data)
+{
+	struct net_if **out = (struct net_if **)user_data;
+
+	if (*out == NULL && iface_is_wired_ethernet(iface)) {
+		*out = iface;
+	}
+}
+
 static struct net_if *ethernet_iface(void)
 {
-	return net_if_get_first_by_type(&NET_L2_GET_NAME(ETHERNET));
+	struct net_if *found = NULL;
+
+	net_if_foreach(pick_wired_iface, &found);
+	return found;
 }
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_ETHERNET_STABLE_MAC)
@@ -63,7 +88,22 @@ static void set_stable_mac(struct net_if *iface)
 	}
 
 	memcpy(params.mac_address.addr, base, sizeof(base));
-	params.mac_address.addr[5] += 3;
+	params.mac_address.addr[5] += 3;        /* ESP-IDF's Ethernet offset */
+
+	/* An efuse that reads back as zero, broadcast or a multicast address
+	 * would be refused by ethernet_enable() and take the interface down
+	 * with it, so it is checked here rather than discovered there. */
+	if (!net_eth_is_addr_valid((struct net_eth_addr *)params.mac_address.addr)) {
+		LOG_WRN("Derived MAC is not a valid unicast address, keeping the "
+			"controller's own");
+		return;
+	}
+
+	/* Kept so a refused address can be put back. */
+	struct ethernet_req_params prev = {};
+
+	memcpy(prev.mac_address.addr, net_if_get_link_addr(iface)->addr,
+	       sizeof(prev.mac_address.addr));
 
 	/* The request is refused with -EACCES while the interface is admin-up,
 	 * and net_if_post_init() brings every interface up at POST_KERNEL, long
@@ -72,7 +112,14 @@ static void set_stable_mac(struct net_if *iface)
 	bool was_up = net_if_is_admin_up(iface);
 
 	if (was_up) {
-		net_if_down(iface);
+		int down_rc = net_if_down(iface);
+
+		if (down_rc < 0) {
+			/* Bringing it back up below would return -EALREADY and
+			 * look like a failure that never happened. */
+			LOG_WRN("Interface would not go down (%d), MAC left alone", down_rc);
+			return;
+		}
 	}
 
 	/* Sets the controller's address filter and the L2 link address together;
@@ -86,7 +133,18 @@ static void set_stable_mac(struct net_if *iface)
 	if (was_up) {
 		rc = net_if_up(iface);
 		if (rc < 0) {
-			LOG_ERR("Interface did not come back up (%d)", rc);
+			/* ethernet_enable() refuses a link address it considers
+			 * invalid, and the interface then stays down for good:
+			 * on a node whose only way in is this interface, that is
+			 * silent death. Put the controller's own address back
+			 * and try once more. */
+			LOG_ERR("Interface did not come back up (%d), reverting MAC", rc);
+			(void)net_mgmt(NET_REQUEST_ETHERNET_SET_MAC_ADDRESS, iface,
+				       &prev, sizeof(prev));
+			rc = net_if_up(iface);
+			if (rc < 0) {
+				LOG_ERR("Interface still down (%d)", rc);
+			}
 		}
 	}
 }
@@ -147,7 +205,10 @@ static void ipv4_event(struct net_mgmt_event_callback *cb, uint64_t event,
 		       struct net_if *iface)
 {
 	ARG_UNUSED(cb);
-	ARG_UNUSED(iface);
+
+	if (iface != s_iface) {
+		return;         /* another interface's lease is not ours */
+	}
 
 	if (event == NET_EVENT_IPV4_DHCP_STOP) {
 		/* A NAK or an expiry ends the lease with the carrier still up, so

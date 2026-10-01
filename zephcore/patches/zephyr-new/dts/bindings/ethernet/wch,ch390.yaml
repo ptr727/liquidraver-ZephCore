@@ -24,6 +24,7 @@ properties:
       CH390 has no reset input, so an active-low setting survives a CPU-only
       reset and holds the pin asserted through the next boot.
 
-      That quietens the idle case only. The driver clears ISR from its RX
-      thread, so the pin is genuinely driven while an interrupt is pending, and
-      a board strapping on this pin has to tolerate that or force the strap.
+      That quietens the idle case only. The driver unmasks receive, transmit
+      and link-change interrupts and clears ISR from its RX thread, so the pin
+      is genuinely driven while an interrupt is pending, and a board strapping
+      on this pin has to tolerate that or force the strap.

@@ -19,7 +19,7 @@ west build -b thinknode_m7/esp32s3/procpu zephcore --pristine -- \
 ```
 
 The companion build serves the app over TCP on port 5000 on the wired link,
-beside BLE, so Home Assistant's MeshCore integration reaches it as an ordinary
+so Home Assistant's MeshCore integration reaches it as an ordinary
 TCP companion. The Ethernet stack is added automatically because the board
 manifest declares `capabilities: ethernet: true`.
 
@@ -192,36 +192,49 @@ ZephCore itself contributes nothing. MeshCore's framing skips any byte that is
 not a frame marker, so clients resynchronise; `meshcore-cli` does so without
 complaint.
 
-### BLE on a board with no display
+### A negative TX power is not representable to clients
 
-The pairing passkey is `CONFIG_ZEPHCORE_BLE_PASSKEY`, **123456** by default. It
-is a compile-time constant and a board with no display cannot show a generated
-one, so the value is fixed and published in the source. The device reports its
-current value in the `DEVICE_INFO` response. On a node nobody will pair with,
-that is a permanently advertising admission path with a known secret.
+Set the TX power negative and clients report it as a large positive number:
+`meshcore-cli` prints `tx_power: 247`, and the Colorado-Mesh desktop client
+refuses it with *"Device reports 247 dBm (slider max 22 dBm)"*. Neither is a
+rendering bug.
 
-**There is no runtime way to turn BLE off on this board.** The `ble_disabled`
-pref is written only by the on-device UI button
-(`helpers/ui/ui_mesh_actions.cpp`), the companion protocol exposes no command
-for it, and the CLI has none either; the `ble_off` key in the prefs JSON is a
-file on `/lfs`, not something a client can reach. A board with no display and
-no buttons therefore cannot disable it at all at runtime.
+The companion protocol carries TX power as one byte. ZephCore treats it as
+**signed** on both sides: `CMD_SET_RADIO_TX_POWER` casts to `int8_t` and accepts
+-9..22, and `SELF_INFO` reports `prefs.tx_power_dbm` directly, so -9 leaves as
+`0xF7`. Clients read that byte **unsigned** against a 0..22 slider, where a
+negative value has no representation and cannot be corrected from their UI.
 
-Compiling it out is the only option, and
-`boards/common/no_ble.conf` does that:
+So the floor the radio supports, and that ZephCore's own Kconfig and CLI allow,
+is outside what the protocol's clients model. **1 dBm is the practical floor**,
+being the lowest the clients offer, and it round-trips cleanly: setting it from
+a client persisted to prefs, applied to the radio live, and survived a reboot
+(`radio started: ... pwr=1`). -9 dBm remains useful for bench work on a live
+mesh, and is not a setting to leave on a deployed node.
 
-```bash
-west build -b thinknode_m7/esp32s3/procpu zephcore --pristine -- \
-  -DEXTRA_CONF_FILE="boards/common/no_ble.conf"
-```
+### BLE is compiled out by default
 
-Verified on this board: the TCP companion works unchanged with BLE gone, and
-internal DRAM drops from 68.1% to 51.5% with flash from 631 KB to 420 KB.
+`board.conf` sets `CONFIG_BT=n`. The reason is not only the ~66 KB of internal
+DRAM and ~210 KB of flash it returns.
 
-The trade-off is the one in the paragraph above: TCP accepts a single client,
-so with BLE gone a companion client and a diagnostic session cannot both be
-connected. Keep BLE until there is a second management path, or accept that
-configuration means disconnecting Home Assistant first.
+**BLE cannot be turned off at runtime on this board.** The `ble_disabled` pref
+is written only by the on-device UI button (`helpers/ui/ui_mesh_actions.cpp`),
+the companion protocol exposes no command for it, and the CLI has none; the
+`ble_off` key in the prefs JSON is a file on `/lfs`, not something a client can
+reach. A board with no display and no buttons therefore has no way to stop it
+advertising.
+
+And what it advertises is weak. The pairing passkey is
+`CONFIG_ZEPHCORE_BLE_PASSKEY`, a compile-time constant defaulting to **123456**,
+and a board with no display cannot show a generated one, so the value is fixed
+and published in the source. The device reports its current value in the
+`DEVICE_INFO` response. On a node nobody will ever pair with, that is a
+permanently advertising admission path with a known secret.
+
+To build *with* BLE, drop `CONFIG_BT=n` from `board.conf`. Note the consequence
+before doing so on a node in service: TCP accepts a single client, so BLE is
+what would let a configuration session coexist with Home Assistant, and without
+either it the companion build (above) is the way to get that.
 
 DHCP hostname: the node name goes out as DHCP option 12, sanitised to a DNS
 label. Verified end to end — the lease records `518ce3cf`, the switch shows it on

@@ -1,5 +1,5 @@
-Support the WCH CH390 with the Davicom DM9051 driver, and fix three defects
-that kept it from passing traffic.
+Support the WCH CH390 with the Davicom DM9051 driver, and fix four defects
+that kept it from carrying traffic reliably.
 
 The CH390 is a 10/100 MAC and PHY in one SPI part whose register map is the
 DM9051's. Its identity registers are not: it reports vendor 0x1C00 and product
@@ -9,7 +9,7 @@ compatible driver, the expected product ID is carried per instance and the
 instance macro runs once per compatible, the way drivers/ethernet/eth_adin2111.c
 already serves the ADIN2111 and the ADIN1110.
 
-Accepting the part was not enough to make it work. Three further defects,
+Accepting the part was not enough to make it work. Four further defects,
 each found and then confirmed fixed on an Elecrow ThinkNode M7 with a CH390:
 
 1. The soft reset in hw_start() returns GPR to its reset default, which on
@@ -33,8 +33,8 @@ each found and then confirmed fixed on an Elecrow ThinkNode M7 with a CH390:
    then answered neither ICMP nor TCP. Bounding the wait leaves interrupts as
    the fast path and makes the stall self-healing.
 
-Defects 2 and 3 are not CH390-specific and look like they affect the DM9051
-equally; no DM9051 board exists in-tree to confirm that against.
+Defects 2, 3 and 4 are not CH390-specific and look like they affect the
+DM9051 equally; no DM9051 board exists in-tree to confirm that against.
 
 4. An RX status error restarted the whole controller. hw_start() resets the
    MAC and the PHY, so it drops the carrier and forces a renegotiation. The
@@ -156,6 +156,15 @@ diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
  		goto out_spi_unlock;
  	}
  
+@@ -488,7 +519,7 @@
+ 	return ret;
+ }
+ 
+-static struct net_pkt *eth_dm9051_recv_pkt(const struct device *dev)
++static struct net_pkt *eth_dm9051_recv_pkt(const struct device *dev, bool *skipped)
+ {
+ 	struct eth_dm9051_data *data = dev->data;
+ 	struct eth_dm9051_rxhdr rxhdr;
 @@ -506,17 +537,16 @@
  
  	rx_len = sys_get_le16(rxhdr.len);
@@ -184,7 +193,7 @@ diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
  
  		ret = eth_dm9051_hw_start(dev, data->iface);
  		if (ret < 0) {
-@@ -525,6 +555,25 @@
+@@ -525,6 +555,28 @@
  		return NULL;
  	}
  
@@ -203,14 +212,43 @@ diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
 +		ret = eth_dm9051_spi_read_mem(dev, DM9051_MRCMD, NULL, rx_len);
 +		if (ret < 0) {
 +			LOG_ERR("%s: Failed to discard RX data (err %d)", dev->name, ret);
++			return NULL;
 +		}
++
++		*skipped = true;
 +		return NULL;
 +	}
 +
  	/* Alloc RX net_pkt and subtract 4 from RX length to discard CRC */
  	pkt = net_pkt_rx_alloc_with_buffer(data->iface,
  					   rx_len - ETH_DM9051_CRC_SIZE,
-@@ -679,7 +728,17 @@
+@@ -581,11 +633,22 @@
+ 			break;
+ 		}
+ 
+-		/* Get received packet */
+-		pkt = eth_dm9051_recv_pkt(dev);
++		/* Get received packet. A frame dropped for a status error is
++		 * counted and stepped over: the FIFO still holds whatever came in
++		 * behind it, and abandoning the drain here would leave that
++		 * backlog to the next interrupt while the overflow that caused
++		 * the drop keeps making more of it.
++		 */
++		bool skipped = false;
++
++		pkt = eth_dm9051_recv_pkt(dev, &skipped);
+ 		if (!pkt) {
++			eth_stats_update_errors_rx(data->iface);
++			if (skipped) {
++				continue;
++			}
+ 			ret = -EIO;
+-			goto out_update_errors_rx;
++			goto out_spi_unlock;
+ 		}
+ 
+ 		/* Push the net_pkt in the network stack */
+@@ -679,7 +742,17 @@
  	data = dev->data;
  
  	while (true) {
@@ -229,7 +267,7 @@ diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
  
  		ret = eth_dm9051_spi_read_reg(dev, DM9051_ISR, &isr);
  		if (ret < 0) {
-@@ -987,24 +1046,32 @@
+@@ -987,24 +1060,32 @@
  	return 0;
  }
  

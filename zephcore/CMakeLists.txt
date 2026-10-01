@@ -650,9 +650,12 @@ else()
   if(CONFIG_ZEPHCORE_COMPANION_ETHERNET)
     target_sources(app PRIVATE app/CompanionEthernet.cpp)
   endif()
-  if(CONFIG_NET_HOSTNAME_DYNAMIC)
-    target_sources(app PRIVATE helpers/net_hostname_label.c)
-  endif()
+  # Unconditional: CompanionWifi.cpp and CompanionEthernet.cpp call
+  # zc_net_set_hostname() without a guard, so gating the implementation on
+  # NET_HOSTNAME_DYNAMIC would fail to link whenever that is off -- which
+  # NET_HOSTNAME_ENABLE=n does, and which NET_HOSTNAME_UNIQUE_UPDATE forces.
+  # The function body carries the guard instead and compiles to a no-op.
+  target_sources(app PRIVATE helpers/net_hostname_label.c)
   # Headless build (e.g. native Linux): no display/buttons/buzzer source files
   # are compiled, but companion code calls ui_* unconditionally. Weak no-op
   # stubs satisfy the link.

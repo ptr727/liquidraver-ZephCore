@@ -497,6 +497,8 @@ config ZEPHCORE_COMPANION_ETHERNET
 config ZEPHCORE_COMPANION_ETHERNET_STABLE_MAC
 	bool "Derive the MAC address from the SoC device ID"
 	depends on ZEPHCORE_COMPANION_ETHERNET
+	select HWINFO
+	select NET_L2_ETHERNET_MGMT
 	default y
 	help
 	  Set the interface address from hwinfo_get_device_id() instead of

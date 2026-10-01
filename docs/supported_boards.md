@@ -107,7 +107,7 @@ xiao_esp32s3/esp32s3/procpu
 > hardware 2026-09-30: radio, Ethernet, DHCP and the companion port all verified
 > (see the board README). The companion is
 > reached over TCP on the wired link (port 5000, as every other ZephCore TCP
-> companion), beside BLE; the console is uart0 through the onboard CH343
+> companion), with BLE compiled out by default; the console is uart0 through the onboard CH340K
 > bridge. The CH390 is driven by Zephyr's DM9051 driver through a ZephCore
 > patch that teaches it the register-compatible WCH part.
 >

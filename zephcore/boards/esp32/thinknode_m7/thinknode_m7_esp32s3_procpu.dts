@@ -8,7 +8,7 @@
  *   PSRAM:    8 MB, OPI octal
  *   Radio:    Semtech LR1110 on SPI2 (TCXO 1.8V, DIO5/DIO6 RF switch)
  *   Ethernet: WCH CH390 on SPI3, optional PoE (declared in board.overlay)
- *   Console:  CH343 USB-UART bridge into uart0
+ *   Console:  CH340K USB-UART bridge into uart0
  *
  * Not fitted: display, GNSS, buzzer, battery, SD card, reset button.
  *
@@ -30,7 +30,7 @@
 	model = "Elecrow ThinkNode M7";
 	compatible = "elecrow,thinknode-m7";
 
-	/* No zephyr,console here: the USB-C data lines ride a CH343 USB-UART
+	/* No zephyr,console here: the USB-C data lines ride a CH340K USB-UART
 	 * bridge into UART0, and the native USB pads are not bonded to the
 	 * connector. esp32s3_console_uart0.dtsi supplies the chosen node. */
 	chosen {
@@ -124,7 +124,7 @@
 		 * has no reset input and keeps its polarity across a CPU-only reset.
 		 *
 		 * It does not make the pin safe, only quiet when idle. The driver
-		 * unmasks RX, TX, link-change and address-overflow, and clears ISR
+		 * unmasks receive, transmit and link-change interrupts, and clears ISR
 		 * only from its RX thread, so the CH390 does drive this pin high
 		 * while an interrupt is pending. A reset landing in that window
 		 * presents a high strap to the next boot. Whether that matters
