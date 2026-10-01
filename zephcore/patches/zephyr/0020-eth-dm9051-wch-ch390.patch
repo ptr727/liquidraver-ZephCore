@@ -1,59 +1,144 @@
-Support the WCH CH390 with the Davicom DM9051 driver, and fix four defects
-that kept it from carrying traffic reliably.
+Support the WCH CH390 with the Davicom DM9051 driver, and fix the driver
+defects the CH390 exposed.
 
-The CH390 is a 10/100 MAC and PHY in one SPI part whose register map is the
-DM9051's. Its identity registers are not: it reports vendor 0x1C00 and product
-0x9151 where eth_dm9051_check_id() demands 0x9051, so the driver rejects it at
-init and the interface never appears. Rather than duplicate a register
-compatible driver, the expected product ID is carried per instance and the
-instance macro runs once per compatible, the way drivers/ethernet/eth_adin2111.c
-already serves the ADIN2111 and the ADIN1110.
+This is the cumulative diff of the upstream-bound commits on the fork
+ptr727/zephyrproject-rtos-zephyr: integration PR #1 (work/dm9051-fixes, the
+generic DM9051 fixes) and PR #2 (work/ch390-support, the CH390 support). One
+section per upstream commit follows, carrying its rationale. The CH390
+devicetree binding (fork commit 21384ecb14b5) is not part of this diff: it is
+a new file, so it lives in patches/zephyr-new/dts/bindings/ethernet/ instead.
+When these land upstream, drop the matching sections and regenerate.
 
-Accepting the part was not enough to make it work. Four further defects,
-each found and then confirmed fixed on an Elecrow ThinkNode M7 with a CH390:
+== drivers: ethernet: dm9051: service ISR while the INT line is asserted (fork 939673f2098b) ==
 
-1. The soft reset in hw_start() returns GPR to its reset default, which on
-   this part leaves the PHY powered down. MDIO still answers, so the PHY
-   reports itself healthy, auto-negotiation-capable and advertising 10/100,
-   while the line side stays dark: auto-negotiation never completes and the
-   link partner ability register stays empty. Re-asserting GPR after the reset
-   brings the link up.
+The INT pin is configured edge triggered, while the controller drives
+it as a level from the ISR bits enabled in IMR. The RX thread reads
+ISR and writes back the bits it read. An event that sets another ISR
+bit between the read and the write-back is not cleared, so the line
+stays asserted, no further edge arrives and the thread waits on its
+semaphore forever. Reception and TX completion both stop. The ISR
+accesses are not under spi_lock, so a transmit in progress on the bus
+can hold the write-back back for a whole frame transfer and widen that
+window. A failed ISR read or write-back leaves the line asserted in the
+same way.
 
-2. The pre-transmit NSR poll waits for a TX-end bit that is only set once a
-   transmit has completed, and treats its timeout as fatal. On a freshly
-   started chip no transmit has ever completed, so every frame is aborted
-   before a byte is written, and TX-end can never be set because no transmit
-   ever happens. The interface silently transmits nothing. With this fixed the
-   node completes DHCP.
+After servicing ISR, service it again without waiting while the INT
+line is still asserted and the last read showed an interrupt source
+enabled in IMR, as the WIZnet drivers do. Bit 7 of ISR is not an
+interrupt source and can read as 1, so it is masked out of that test.
+Otherwise wait for an edge, but for at most one second, and on a
+timeout service ISR if the line is asserted. That recovers a failed
+ISR access and any other lost edge, and with nothing pending it costs
+at most two GPIO reads per second. Espressif's driver for the WCH
+CH390, which shares this register map, bounds its wait and checks the
+INT level the same way:
+https://github.com/espressif/esp-eth-drivers/blob/6c6e77f97ed4c56142140ee14e9ef7f3a4451b7b/ch390/src/esp_eth_mac_ch390.c#L892-L896
 
-3. The receive thread waits on the interrupt alone, but the pin is
-   edge-triggered while the controller drives it from a level. A new event
-   setting ISR before the thread clears it leaves the line asserted with no
-   fresh edge, and receive stalls permanently. The node completed DHCP and
-   then answered neither ICMP nor TCP. Bounding the wait leaves interrupts as
-   the fast path and makes the stall self-healing.
+Tested on an Elecrow ThinkNode M7 (ESP32-S3 with a WCH CH390, driven by
+this driver with local changes for that part). Without this change
+reception stopped for good within seconds under TCP traffic or a ping
+flood, and once 8 s after boot with no load: the INT line was held
+with PR and ROS, and in some runs PT, pending in ISR, IMR was 0xa3,
+and the RX thread was waiting on its semaphore. With the immediate
+re-service, 13 minutes of TCP traffic, pings and floods took 94776
+wakeups, 3719 of which re-serviced ISR without waiting for an edge,
+and reception never stalled. Not tested on a DM9051.
 
-Defects 2, 3 and 4 are not CH390-specific and look like they affect the
-DM9051 equally; no DM9051 board exists in-tree to confirm that against.
+== drivers: ethernet: dm9051: service ISR when the INT line read fails (fork 8d90d172d38f) ==
 
-4. An RX status error restarted the whole controller. hw_start() resets the
-   MAC and the PHY, so it drops the carrier and forces a renegotiation. The
-   status bit that actually fires is the FIFO overflow, which is ordinary
-   congestion on a busy segment, so every busy moment cost a carrier loss, a
-   link renegotiation and a fresh DHCP cycle: measured three link bounces in
-   ten minutes under a 5 packet per second ping. A frame whose length is
-   usable is now skipped in the FIFO and reception continues; the restart is
-   kept only for a length outside the legal range, where the read pointer
-   cannot be trusted and there is nothing to skip past. The same ten-minute
-   load then produced one dropped frame and no link event at all.
+On the RX thread's wait timeout, a failed gpio_pin_get_dt() read was
+treated as an inactive line, so ISR was not serviced and the thread
+waited again. Repeated read failures could then defer servicing
+indefinitely. Only a read of zero now counts as inactive, so a read
+error services ISR, at most once per wait period.
 
-Verified on hardware: link up at 100 Mbps, DHCP lease acquired, ping 3/3 at
-1.9 ms average and the companion's TCP port reachable from another host.
+== drivers: ethernet: dm9051: set the INT polarity at init (fork 6698a1a76d36) ==
 
-The binding lives in patches/zephyr-new/dts/bindings/ethernet/wch,ch390.yaml.
-`wch` is already a registered vendor prefix upstream.
+The RX thread now checks the INT line level when its bounded wait
+times out, and it starts before the interface is started. INTCR keeps
+its reset polarity until hw_start() programs it from the GPIO flags, so
+on a board with an active low INT pin the idle line read as asserted
+and ISR was serviced once a second until the interface was started.
+Program the polarity in init as well, right after the chip ID check.
+
+== drivers: ethernet: dm9051: drop RX frames too large for the buffer (fork 540ca4fa0c39) ==
+
+eth_dm9051_recv_pkt() used the size of its RX buffer as the limit for
+a trustworthy frame length. Without CONFIG_NET_VLAN that buffer is
+1518 bytes, but with RCR.DIS_LONG set the controller still stores
+somewhat longer frames, such as a full size frame carrying an 802.1Q
+tag. A valid frame of 1519 bytes or more was therefore treated like a
+corrupt header and the controller was restarted.
+
+Restart only for a length above the 1536 byte limit that the Linux
+driver also uses, DM9051_PKT_MAX, or below the minimum frame size:
+https://github.com/torvalds/linux/blob/d24e8ac715de2e16a53c144005b1863660a5fbea/drivers/net/ethernet/davicom/dm9051.h#L150
+A frame within that limit but larger than the buffer is read past
+and dropped, as the allocation failure path already does.
+
+Observed on an Elecrow ThinkNode M7 (ESP32-S3 with a WCH CH390, driven
+by this driver with local changes for that part), with the RX read
+pointer traced. A 1521 byte multicast frame with status 0x40 restarted
+the controller, which on the CH390 took the link down for 1.6 s and
+caused a new DHCP lease. The read pointer had
+advanced by exactly the previous frame plus its header, so the length
+was genuine. Not tested on a DM9051.
+
+== drivers: ethernet: dm9051: add WCH CH390 support (fork c1615ce332d4) ==
+
+The WCH CH390 has the register map of the DM9051 but reports product ID
+0x9151, so eth_dm9051_check_id() rejects it. Carry the expected product
+ID in the instance config and instantiate the driver for the wch,ch390
+compatible as well, the same way eth_adin2111.c serves the ADIN2111 and
+the ADIN1110.
+
+The CH390 also behaves differently in three places, each handled for
+the CH390 only so the DM9051 path is unchanged. Espressif's CH390
+driver takes the same approach to each, though the order of its setup
+writes differs.
+
+- Its software reset powers the PHY down again. MDIO keeps answering
+  but the link never comes up. Power the PHY on again after the reset,
+  once the INT polarity is restored, and wait 10 ms before writing the
+  remaining registers:
+  https://github.com/espressif/esp-eth-drivers/blob/6c6e77f97ed4c56142140ee14e9ef7f3a4451b7b/ch390/src/esp_eth_mac_ch390.c#L386-L389
+
+- It leaves NSR TX1END and TX2END clear after reset, so the pre-transmit
+  NSR poll never passes and no frame is ever sent. Wait for TCR.TXREQ of
+  the previous frame to clear instead. A full frame takes about 1.2 ms
+  at 10 Mbit/s, so the wait busy polls against a 2 ms cycle counter
+  deadline with WAIT_FOR() rather than sleeping in system ticks:
+  https://github.com/espressif/esp-eth-drivers/blob/6c6e77f97ed4c56142140ee14e9ef7f3a4451b7b/ch390/src/esp_eth_mac_ch390.c#L763-L773
+
+- A FIFO overflow sets an RX status error, and restarting the
+  controller for it powers the PHY down, so every overflow cost a link
+  outage and a new DHCP lease. Skip such a frame by its length instead
+  and keep draining. The controller is still restarted when the length
+  is out of range, when the header's ready byte is not 0x01, or when
+  the skip fails. For that, eth_dm9051_recv_pkt() now returns an errno
+  so the caller can tell a skipped frame (-EBADMSG), after which the
+  drain continues, from one that ends the drain:
+  https://github.com/espressif/esp-eth-drivers/blob/6c6e77f97ed4c56142140ee14e9ef7f3a4451b7b/ch390/src/esp_eth_mac_ch390.c#L812-L815
+
+Tested on an Elecrow ThinkNode M7 (ESP32-S3 with a CH390), adding one
+difference at a time:
+- From a power-on reset, without the PHY power-on there was no link:
+  BMSR 0x7849, LPA 0x0001, and GPR read 0x05 right after the reset
+  although PHY_ON had been written before it. With it, the link came
+  up at 100 Mbps full duplex about 2.1 s after boot.
+- From a power-on reset, with the NSR poll the link was up but every
+  poll timed out with NSR=0x40, no TX request was written and DHCP
+  never completed. With the TCR.TXREQ wait, DHCP completed about 5 s
+  after boot, and the longest single wait measured under a ping flood
+  was 213 us.
+- With the restart, 30 s of 1400-byte pings every 2 ms produced RX
+  status 0x01, the link was down for 1.9 s and DHCP ran again. With the
+  skip, 13 minutes of TCP traffic with two such floods dropped one frame
+  with status 0x41, with no restart and no link event, and 600 of 600
+  pings were answered.
 
 diff --git a/drivers/ethernet/Kconfig.dm9051 b/drivers/ethernet/Kconfig.dm9051
+index b3f13fab327..7063712937b 100644
 --- a/drivers/ethernet/Kconfig.dm9051
 +++ b/drivers/ethernet/Kconfig.dm9051
 @@ -4,12 +4,13 @@
@@ -61,7 +146,7 @@ diff --git a/drivers/ethernet/Kconfig.dm9051 b/drivers/ethernet/Kconfig.dm9051
  
  menuconfig ETH_DM9051
 -	bool "Davicom DM9051 Ethernet Controller"
-+	bool "Davicom DM9051 / WCH CH390 Ethernet Controller"
++	bool "Davicom DM9051 and WCH CH390 Ethernet Controller"
  	default y
 -	depends on DT_HAS_DAVICOM_DM9051_ENABLED
 +	depends on DT_HAS_DAVICOM_DM9051_ENABLED || DT_HAS_WCH_CH390_ENABLED
@@ -74,20 +159,45 @@ diff --git a/drivers/ethernet/Kconfig.dm9051 b/drivers/ethernet/Kconfig.dm9051
  config ETH_DM9051_RX_THREAD_STACK_SIZE
  	int "Stack size for internal incoming packet handler"
 diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
+index a8406e69fae..018bc97c9d8 100644
 --- a/drivers/ethernet/eth_dm9051.c
 +++ b/drivers/ethernet/eth_dm9051.c
-@@ -36,6 +36,10 @@
+@@ -33,9 +33,15 @@ LOG_MODULE_REGISTER(eth_dm9051, CONFIG_ETHERNET_LOG_LEVEL);
+ /* Minimum Ethernet frame size (64 bytes including CRC) */
+ #define ETH_DM9051_MIN_FRAME_SIZE	64
+ 
++/* Largest RX frame length trusted without a restart, as DM9051_PKT_MAX in the Linux driver */
++#define ETH_DM9051_MAX_FRAME_SIZE	1536U
++
  /* DM9051 Product ID */
  #define DM9051_ID			0x9051
  
-+/* CH390 Product ID. WCH's part is register-compatible with the DM9051 but
-+ * reports its own identity (vendor 0x1C00), so only the ID gate differs. */
-+#define CH390_ID			0x9151
++/* CH390 Product ID */
++#define CH390_ID			0x9151U
 +
  /* DM9051 PHY Address */
  #define DM9051_PHY_ADDR			1
  
-@@ -177,6 +181,7 @@
+@@ -146,6 +152,8 @@ LOG_MODULE_REGISTER(eth_dm9051, CONFIG_ETHERNET_LOG_LEVEL);
+ #define DM9051_ISR_PT			BIT(1)
+ /* PR - Packet Received */
+ #define DM9051_ISR_PR			BIT(0)
++/* Interrupt sources enabled in IMR */
++#define DM9051_ISR_EVENTS		(DM9051_ISR_LNKCHG | DM9051_ISR_PT | DM9051_ISR_PR)
+ 
+ /* 0x7F */
+ /* PAR - Pointer Auto-Return Mode */
+@@ -173,10 +181,17 @@ LOG_MODULE_REGISTER(eth_dm9051, CONFIG_ETHERNET_LOG_LEVEL);
+ #define DM9051_NSR_POLL_TIMEOUT		K_USEC(20)
+ /* Delay between NSR status polls */
+ #define DM9051_NSR_POLL_INTERVAL	K_USEC(1)
++/* Max time the RX thread waits for an INT edge before checking the line */
++#define DM9051_INT_POLL_PERIOD		K_SECONDS(1)
++/* Max time to wait for a previous TX request to complete, in microseconds */
++#define DM9051_TCR_POLL_TIMEOUT_US	2000U
++/* Delay between TCR status polls, in microseconds */
++#define DM9051_TCR_POLL_INTERVAL_US	10U
+ 
  struct eth_dm9051_config {
  	struct net_eth_mac_config mac_cfg;
  	struct gpio_dt_spec gpio_int;
@@ -95,7 +205,7 @@ diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
  	const struct device *phy_dev;
  	struct spi_dt_spec spi;
  };
-@@ -313,6 +318,7 @@
+@@ -313,6 +328,7 @@ static inline int eth_dm9051_spi_write_regs(const struct device *dev, uint8_t re
  
  static int eth_dm9051_check_id(const struct device *dev)
  {
@@ -103,69 +213,117 @@ diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
  	uint16_t pid;
  	int ret;
  
-@@ -323,8 +329,9 @@
+@@ -323,8 +339,9 @@ static int eth_dm9051_check_id(const struct device *dev)
  	}
  
  	/* Check product ID */
 -	if (sys_le16_to_cpu(pid) != DM9051_ID) {
 -		LOG_ERR("%s: Found ID: %04x, Expected ID: %04x\n", dev->name, pid, DM9051_ID);
 +	if (sys_le16_to_cpu(pid) != config->chip_id) {
-+		LOG_ERR("%s: Found ID: %04x, Expected ID: %04x\n", dev->name, pid,
++		LOG_ERR("%s: Found ID: %04x, Expected ID: %04x", dev->name, sys_le16_to_cpu(pid),
 +			config->chip_id);
  		return -EIO;
  	}
  
-@@ -399,6 +406,22 @@
+@@ -367,6 +384,33 @@ static int eth_dm9051_nsr_poll(const struct device *dev, k_timeout_t timeout)
+ 	return -ETIMEDOUT;
+ }
  
- 	k_usleep(10);
- 
-+	/*
-+	 * Re-assert the PHY power-on. The soft reset above returns GPR to its
-+	 * reset default, and on the CH390 that default leaves the PHY powered
-+	 * down: MDIO keeps answering, so the PHY reports itself healthy and
-+	 * auto-negotiation-capable, while the line side stays dark and the link
-+	 * never comes up. Measured on an Elecrow ThinkNode M7, where the link
-+	 * partner's ability register stayed empty until this write was added.
-+	 * The 100 ms settle is what WCH's own driver allows.
-+	 */
-+	ret = eth_dm9051_spi_write_reg(dev, DM9051_GPR, DM9051_GPR_PHY_ON);
-+	if (ret < 0) {
++static bool eth_dm9051_tcr_poll_done(const struct device *dev, int *ret)
++{
++	uint8_t tcr;
++
++	*ret = eth_dm9051_spi_read_reg(dev, DM9051_TCR, &tcr);
++
++	return (*ret != 0) || ((tcr & DM9051_TCR_TXREQ) == 0U);
++}
++
++static int eth_dm9051_tcr_poll(const struct device *dev)
++{
++	int ret = 0;
++
++	/* Busy wait: a full frame takes about 1.2 ms to send at 10 Mbit/s */
++	if (WAIT_FOR(eth_dm9051_tcr_poll_done(dev, &ret), DM9051_TCR_POLL_TIMEOUT_US,
++		     k_busy_wait(DM9051_TCR_POLL_INTERVAL_US))) {
 +		return ret;
 +	}
 +
-+	k_msleep(100);
++	/* Read once more in case the deadline passed while this thread was preempted */
++	if (eth_dm9051_tcr_poll_done(dev, &ret)) {
++		return ret;
++	}
 +
- 	/* Set gpio pin polarity based on gpio dt flags */
- 	ret = eth_dm9051_spi_write_reg(dev, DM9051_INTCR,
- 				       (config->gpio_int.dt_flags & GPIO_ACTIVE_LOW) > 0 ?
-@@ -451,8 +474,16 @@
++	return -ETIMEDOUT;
++}
++
+ static int eth_dm9051_hw_start(const struct device *dev, struct net_if *iface __unused)
+ {
+ 	const uint8_t imr = DM9051_IMR_PRI | DM9051_IMR_PTI | DM9051_IMR_LNKCHGI | DM9051_IMR_PAR;
+@@ -407,6 +451,16 @@ static int eth_dm9051_hw_start(const struct device *dev, struct net_if *iface __
+ 		return ret;
+ 	}
+ 
++	if (config->chip_id == CH390_ID) {
++		/* The CH390 software reset powers the PHY down again */
++		ret = eth_dm9051_spi_write_reg(dev, DM9051_GPR, DM9051_GPR_PHY_ON);
++		if (ret < 0) {
++			return ret;
++		}
++
++		k_msleep(10);
++	}
++
+ 	/* Enable broadcast packets */
+ 	ret = eth_dm9051_spi_write_reg(dev, DM9051_MAR + 7, DM9051_MAR_7_BCAST_EN);
+ 	if (ret < 0) {
+@@ -439,6 +493,7 @@ static int eth_dm9051_hw_stop(const struct device *dev, struct net_if *iface __u
+ 
+ static int eth_dm9051_tx(const struct device *dev, struct net_pkt *pkt)
+ {
++	const struct eth_dm9051_config *config = dev->config;
+ 	uint16_t len = (uint16_t)net_pkt_get_len(pkt);
+ 	struct eth_dm9051_data *data = dev->data;
+ 	uint16_t len16;
+@@ -451,7 +506,15 @@ static int eth_dm9051_tx(const struct device *dev, struct net_pkt *pkt)
  
  	k_mutex_lock(&data->spi_lock, K_FOREVER);
  
+-	ret = eth_dm9051_nsr_poll(dev, DM9051_NSR_POLL_TIMEOUT);
 +	/*
-+	 * Best-effort wait for an in-flight transmit; a timeout is not an error.
-+	 * NSR's TX-end bits stay clear until a transmit has completed, so on a
-+	 * freshly started chip this poll never passes, and treating that as a
-+	 * failure aborts every frame before a byte is written. TX-end can then
-+	 * never be set, because no transmit ever happens, and the interface
-+	 * silently transmits nothing for the life of the boot.
++	 * The CH390 leaves NSR TX1END and TX2END clear after reset, so on that
++	 * part wait for TCR.TXREQ of the previous frame to clear instead.
 +	 */
- 	ret = eth_dm9051_nsr_poll(dev, DM9051_NSR_POLL_TIMEOUT);
--	if (ret < 0) {
-+	if (ret < 0 && ret != -ETIMEDOUT) {
++	if (config->chip_id == CH390_ID) {
++		ret = eth_dm9051_tcr_poll(dev);
++	} else {
++		ret = eth_dm9051_nsr_poll(dev, DM9051_NSR_POLL_TIMEOUT);
++	}
+ 	if (ret < 0) {
  		goto out_spi_unlock;
  	}
- 
-@@ -488,7 +519,7 @@
+@@ -488,8 +551,14 @@ out_spi_unlock:
  	return ret;
  }
  
 -static struct net_pkt *eth_dm9051_recv_pkt(const struct device *dev)
-+static struct net_pkt *eth_dm9051_recv_pkt(const struct device *dev, bool *skipped)
++/*
++ * Read one frame from RX SRAM. Returns 0 with *out set, -EBADMSG when the frame
++ * was dropped and the next one can still be read, or another negative errno to
++ * end this drain of RX SRAM.
++ */
++static int eth_dm9051_recv_pkt(const struct device *dev, struct net_pkt **out)
  {
++	const struct eth_dm9051_config *config = dev->config;
  	struct eth_dm9051_data *data = dev->data;
  	struct eth_dm9051_rxhdr rxhdr;
-@@ -506,17 +537,16 @@
+ 	struct net_pkt *pkt;
+@@ -501,28 +570,48 @@ static struct net_pkt *eth_dm9051_recv_pkt(const struct device *dev)
+ 				      sizeof(rxhdr));
+ 	if (ret < 0) {
+ 		LOG_ERR("%s: Failed to read RX header (err %d)", dev->name, ret);
+-		return NULL;
++		return ret;
+ 	}
  
  	rx_len = sys_get_le16(rxhdr.len);
  
@@ -174,110 +332,166 @@ diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
 -	    !IN_RANGE(rx_len, ETH_DM9051_MIN_FRAME_SIZE, sizeof(data->rx_buf))) {
 -		if ((rxhdr.status & ~DM9051_RSR_MF) > 0) {
 -			LOG_DBG("%s: RX status error: %02x", dev->name, rxhdr.status);
--		}
--
++	/* Without a valid length the end of the frame in RX SRAM is unknown */
++	if (!IN_RANGE(rx_len, ETH_DM9051_MIN_FRAME_SIZE, ETH_DM9051_MAX_FRAME_SIZE)) {
++		LOG_DBG("%s: RX length out of range: %u (min: %u, max: %u), status: %02x",
++			dev->name, rx_len, ETH_DM9051_MIN_FRAME_SIZE, ETH_DM9051_MAX_FRAME_SIZE,
++			rxhdr.status);
++		goto out_restart;
++	}
++
++	if ((rxhdr.status & ~DM9051_RSR_MF) > 0) {
++		LOG_DBG("%s: RX status error: %02x", dev->name, rxhdr.status);
++
++		/* Skipping by the length needs a header read from a frame boundary */
++		if ((config->chip_id != CH390_ID) || (rxhdr.flag != DM9051_FLAG_RX_PKT)) {
++			goto out_restart;
+ 		}
+ 
 -		if (!IN_RANGE(rx_len, ETH_DM9051_MIN_FRAME_SIZE, sizeof(data->rx_buf))) {
 -			LOG_DBG("%s: RX length out of range: %u (min: %u, max: %zu)",
 -				dev->name, rx_len, ETH_DM9051_MIN_FRAME_SIZE, sizeof(data->rx_buf));
--		}
-+	/*
-+	 * A length outside the legal range means the FIFO read pointer can no
-+	 * longer be trusted: there is no way to know where this frame ends, so
-+	 * nothing can be skipped and the controller has to be restarted. That
-+	 * restart resets the MAC and the PHY and therefore drops the carrier,
-+	 * so it is reserved for exactly this case.
-+	 */
-+	if (!IN_RANGE(rx_len, ETH_DM9051_MIN_FRAME_SIZE, sizeof(data->rx_buf))) {
-+		LOG_DBG("%s: RX length out of range: %u (min: %u, max: %zu)",
-+			dev->name, rx_len, ETH_DM9051_MIN_FRAME_SIZE, sizeof(data->rx_buf));
- 
- 		ret = eth_dm9051_hw_start(dev, data->iface);
- 		if (ret < 0) {
-@@ -525,6 +555,38 @@
- 		return NULL;
- 	}
- 
-+	/*
-+	 * A status error with a usable length is a frame to drop, not a reason
-+	 * to restart the controller. The common one is a FIFO overflow, which
-+	 * is ordinary congestion on a busy segment; restarting there turns a
-+	 * dropped frame into a carrier loss, a link renegotiation and a fresh
-+	 * DHCP cycle every time the segment gets busy. The length is
-+	 * trustworthy here, so the frame is skipped in the FIFO instead and
-+	 * reception continues.
-+	 */
-+	if ((rxhdr.status & ~DM9051_RSR_MF) > 0) {
-+		LOG_DBG("%s: RX status error: %02x, dropping frame", dev->name, rxhdr.status);
-+
++		/* The CH390 skips a frame with a status error, such as a FIFO overflow */
 +		ret = eth_dm9051_spi_read_mem(dev, DM9051_MRCMD, NULL, rx_len);
 +		if (ret < 0) {
-+			/* Part of the frame may have been clocked out before the
-+			 * failure, so the read pointer is no longer known to sit
-+			 * on a frame boundary. That is the same unrecoverable
-+			 * state as a bad length, and has the same remedy. */
-+			LOG_ERR("%s: Failed to discard RX data (err %d), restarting",
-+				dev->name, ret);
-+			ret = eth_dm9051_hw_start(dev, data->iface);
-+			if (ret < 0) {
-+				LOG_ERR("%s: Failed to restart HW after RX error (err %d)",
-+					dev->name, ret);
-+			}
-+			return NULL;
-+		}
-+
-+		*skipped = true;
-+		return NULL;
++			LOG_ERR("%s: Failed to discard RX data (err %d)", dev->name, ret);
++			goto out_restart;
+ 		}
+ 
+-		ret = eth_dm9051_hw_start(dev, data->iface);
++		return -EBADMSG;
 +	}
 +
- 	/* Alloc RX net_pkt and subtract 4 from RX length to discard CRC */
- 	pkt = net_pkt_rx_alloc_with_buffer(data->iface,
- 					   rx_len - ETH_DM9051_CRC_SIZE,
-@@ -581,11 +643,22 @@
- 			break;
- 		}
- 
--		/* Get received packet */
--		pkt = eth_dm9051_recv_pkt(dev);
-+		/* Get received packet. A frame dropped for a status error is
-+		 * counted and stepped over: the FIFO still holds whatever came in
-+		 * behind it, and abandoning the drain here would leave that
-+		 * backlog to the next interrupt while the overflow that caused
-+		 * the drop keeps making more of it.
-+		 */
-+		bool skipped = false;
++	/* Drop a frame larger than the stack accepts */
++	if (rx_len > sizeof(data->rx_buf)) {
++		LOG_DBG("%s: RX frame too large: %u (max: %zu)", dev->name, rx_len,
++			sizeof(data->rx_buf));
 +
-+		pkt = eth_dm9051_recv_pkt(dev, &skipped);
- 		if (!pkt) {
-+			eth_stats_update_errors_rx(data->iface);
-+			if (skipped) {
-+				continue;
-+			}
- 			ret = -EIO;
--			goto out_update_errors_rx;
-+			goto out_spi_unlock;
++		ret = eth_dm9051_spi_read_mem(dev, DM9051_MRCMD, NULL, rx_len);
+ 		if (ret < 0) {
+-			LOG_ERR("%s: Failed to restart HW after RX error (err %d)", dev->name, ret);
++			LOG_ERR("%s: Failed to discard RX data (err %d)", dev->name, ret);
++			return ret;
+ 		}
+-		return NULL;
++		return -EMSGSIZE;
+ 	}
+ 
+ 	/* Alloc RX net_pkt and subtract 4 from RX length to discard CRC */
+@@ -535,8 +624,9 @@ static struct net_pkt *eth_dm9051_recv_pkt(const struct device *dev)
+ 		ret = eth_dm9051_spi_read_mem(dev, DM9051_MRCMD, NULL, rx_len);
+ 		if (ret < 0) {
+ 			LOG_ERR("%s: Failed to discard RX data (err %d)", dev->name, ret);
++			return ret;
+ 		}
+-		return NULL;
++		return -ENOMEM;
+ 	}
+ 
+ 	/* Read RX data from RX SRAM */
+@@ -552,11 +642,21 @@ static struct net_pkt *eth_dm9051_recv_pkt(const struct device *dev)
+ 		goto out_net_pkt_unref;
+ 	}
+ 
+-	return pkt;
++	*out = pkt;
++
++	return 0;
+ 
+ out_net_pkt_unref:
+ 	net_pkt_unref(pkt);
+-	return NULL;
++	return ret;
++
++out_restart:
++	/* Resynchronize RX SRAM by restarting the controller */
++	ret = eth_dm9051_hw_start(dev, data->iface);
++	if (ret < 0) {
++		LOG_ERR("%s: Failed to restart HW after RX error (err %d)", dev->name, ret);
++	}
++	return -EIO;
+ }
+ 
+ static int eth_dm9051_rx(const struct device *dev)
+@@ -582,9 +682,13 @@ static int eth_dm9051_rx(const struct device *dev)
  		}
  
- 		/* Push the net_pkt in the network stack */
-@@ -679,7 +752,17 @@
+ 		/* Get received packet */
+-		pkt = eth_dm9051_recv_pkt(dev);
+-		if (!pkt) {
+-			ret = -EIO;
++		ret = eth_dm9051_recv_pkt(dev, &pkt);
++		if (ret == -EBADMSG) {
++			/* Frame dropped, keep draining the frames behind it */
++			eth_stats_update_errors_rx(data->iface);
++			continue;
++		}
++		if (ret < 0) {
+ 			goto out_update_errors_rx;
+ 		}
+ 
+@@ -670,19 +774,36 @@ static void eth_dm9051_rx_thread(void *p1, void *p2, void *p3)
+ 	ARG_UNUSED(p2);
+ 	ARG_UNUSED(p3);
+ 
++	const struct eth_dm9051_config *config;
+ 	struct eth_dm9051_data *data;
+ 	struct device *dev;
+ 	uint8_t isr = 0;
+ 	int ret;
+ 
+ 	dev = p1;
++	config = dev->config;
  	data = dev->data;
  
  	while (true) {
 -		k_sem_take(&data->int_event, K_FOREVER);
 +		/*
-+		 * Wait for the interrupt, but never only for it. The pin is
-+		 * edge-triggered while the controller drives it from a level:
-+		 * when a new event sets ISR before the thread clears it, the
-+		 * line stays asserted, no fresh edge arrives and receive stalls
-+		 * for good. Observed on a CH390, where the interface completed
-+		 * DHCP and then answered nothing. The poll bounds that stall
-+		 * instead of leaving it permanent; interrupts still deliver
-+		 * immediately when they arrive.
++		 * The interrupt is edge triggered but the line follows ISR, so an
++		 * event latched between reading ISR and writing it back keeps the
++		 * line asserted without a new edge. Service ISR again instead of waiting for one,
++		 * and bound the wait so that a line left asserted by a failed ISR
++		 * access is still serviced.
 +		 */
-+		(void)k_sem_take(&data->int_event, K_MSEC(50));
++		if (((isr & DM9051_ISR_EVENTS) == 0U) ||
++		    (gpio_pin_get_dt(&config->gpio_int) <= 0)) {
++			ret = k_sem_take(&data->int_event, DM9051_INT_POLL_PERIOD);
++			/* A failed line read services ISR rather than waiting again */
++			if ((ret != 0) && (gpio_pin_get_dt(&config->gpio_int) == 0)) {
++				continue;
++			}
++		}
  
  		ret = eth_dm9051_spi_read_reg(dev, DM9051_ISR, &isr);
  		if (ret < 0) {
-@@ -987,24 +1070,32 @@
++			isr = 0;
+ 			LOG_ERR("%s: Failed to read ISR (err %d)", dev->name, ret);
+ 			eth_stats_update_errors_rx(data->iface);
+ 			continue;
+@@ -690,6 +811,7 @@ static void eth_dm9051_rx_thread(void *p1, void *p2, void *p3)
+ 
+ 		ret = eth_dm9051_spi_write_reg(dev, DM9051_ISR, isr);
+ 		if (ret < 0) {
++			isr = 0;
+ 			LOG_ERR("%s: Failed to write ISR (err %d)", dev->name, ret);
+ 			eth_stats_update_errors_rx(data->iface);
+ 			continue;
+@@ -977,6 +1099,14 @@ static int eth_dm9051_init(const struct device *dev)
+ 		return ret;
+ 	}
+ 
++	/* Set the INT pin polarity before the RX thread starts checking the line */
++	ret = eth_dm9051_spi_write_reg(dev, DM9051_INTCR,
++				       (config->gpio_int.dt_flags & GPIO_ACTIVE_LOW) > 0 ?
++				       DM9051_INTCR_POL_LOW : DM9051_INTCR_POL_HIGH);
++	if (ret < 0) {
++		return ret;
++	}
++
+ 	ret = eth_dm9051_set_mac_addr(dev);
+ 	if (ret < 0) {
+ 		LOG_WRN("%s: Unable to set MAC address", dev->name);
+@@ -987,24 +1117,32 @@ static int eth_dm9051_init(const struct device *dev)
  	return 0;
  }
  
@@ -290,7 +504,7 @@ diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
 +	static struct eth_dm9051_data name##_data_##inst;					\
  												\
 -	static const struct eth_dm9051_config eth_dm9051_config_##inst = {			\
-+	static const struct eth_dm9051_config name##_config_##inst = {			\
++	static const struct eth_dm9051_config name##_config_##inst = {				\
  		.mac_cfg = NET_ETH_MAC_DT_INST_CONFIG_INIT(inst),				\
  		.gpio_int = GPIO_DT_SPEC_INST_GET(inst, int_gpios),				\
 -		.phy_dev = DEVICE_GET(eth_dm9051_phy_##inst),					\
@@ -315,7 +529,7 @@ diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
  DT_INST_FOREACH_STATUS_OKAY(ETH_DM9051_INIT)
 +
 +#undef DT_DRV_COMPAT
-+#define DT_DRV_COMPAT	wch_ch390
++#define DT_DRV_COMPAT wch_ch390
 +
 +#define ETH_CH390_INIT(inst) ETH_DM9051_INITIALIZE(inst, eth_ch390, CH390_ID)
 +DT_INST_FOREACH_STATUS_OKAY(ETH_CH390_INIT)

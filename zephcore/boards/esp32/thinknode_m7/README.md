@@ -126,12 +126,16 @@ Verified on hardware 2026-09-30, on the board this port was written for.
 | Companion protocol | `CMD_DEVICE_QUERY` over TCP answered `DEVICE_INFO`: model `ThinkNode M7`, version `1.17.6-zephcore` |
 | DHCP hostname in DNS | `<node-name>.<lan-domain>` resolves and pings, some minutes after first boot |
 
-Getting there needed three fixes in the DM9051 driver patch: the PHY power-on
-has to be re-asserted after the MAC soft reset, the pre-transmit NSR poll must
-not abort the frame when it times out, and the receive thread must not wait on
-the edge interrupt alone. Without the first there is no link at all; without
-the second nothing is ever transmitted; without the third the node completes
-DHCP and then answers nothing.
+Getting there needed driver changes beyond accepting the CH390's ID, now in
+`patches/zephyr/0020-eth-dm9051-wch-ch390.patch` (one section per upstream-bound
+commit). The CH390 soft reset powers the PHY down again, so it is powered back
+on; the CH390 leaves the NSR transmit-end bits clear, so transmit waits on
+TCR.TXREQ instead; and the receive thread services the interrupt again while
+the line is still asserted, rather than waiting for an edge that never comes.
+Without the first there is no link at all; without the second nothing is ever
+transmitted; without the third the node completes DHCP and then answers
+nothing. Each was reproduced on unpatched code and confirmed fixed on this
+board.
 
 ## Connecting a companion app
 
@@ -245,15 +249,21 @@ button ladder, and the Home Assistant integration itself.
 
 Early bring-up saw the link drop and recover roughly every couple of minutes,
 always self-healing after about 1.7 s with a fresh DHCP bind. The cause was in
-the driver, not the hardware, and is fixed in the CH390 patch.
+the driver, not the hardware, and has two parts, both fixed in `0020`.
 
 `eth_dm9051_recv_pkt()` treated any RX status error as fatal and called
 `hw_start()`, which resets the MAC and the PHY and therefore drops the carrier.
 The status bit that actually fired was the **FIFO overflow** — ordinary
 congestion on a busy segment — so every busy moment cost a carrier loss, a
-renegotiation and a new DHCP cycle. A frame with a usable length is now skipped
-in the FIFO and reception continues; the restart is kept only for a length
-outside the legal range, where the read pointer cannot be trusted.
+renegotiation and a new DHCP cycle. On the CH390 such a frame is now skipped by
+its length and reception continues.
+
+The same restart also fired for a legal frame of 1519 to 1522 bytes, such as a
+full-size VLAN-tagged one: the chip delivers frames up to 1522 bytes, while the
+driver's buffer holds 1518 without VLAN support, so the length check took the
+frame for a corrupt header. A frame up to 1536 bytes that is larger than the
+buffer is now dropped by its length; the restart is kept for a length no frame
+can have, where the read pointer cannot be trusted.
 
 Measured under a 5 packet per second ping, ten minutes each:
 

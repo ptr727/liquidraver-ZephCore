@@ -1,11 +1,11 @@
-# Copyright (c) 2026 ZephCore
+# Copyright The Zephyr Project Contributors
 # SPDX-License-Identifier: Apache-2.0
 
 description: |
-  WCH CH390 10/100BASE-T Ethernet controller with SPI interface.
+  WCH CH390 10/100BASE-T Ethernet Controller with SPI interface.
 
-  Register-compatible with the Davicom DM9051 and driven by the same driver;
-  only the identity registers differ (vendor 0x1C00, product 0x9151).
+  The CH390 is register-compatible with the Davicom DM9051 and is supported by
+  the DM9051 driver.
 
 compatible: "wch,ch390"
 
@@ -16,15 +16,5 @@ properties:
     type: phandle-array
     required: true
     description: |
-      Interrupt pin of the CH390.
-
-      The driver programs the controller's INTCR polarity from these flags.
-      GPIO_ACTIVE_HIGH is INTCR's reset value and idles the line low, so it is
-      what a board must use when the pin doubles as a boot strapping pin: the
-      CH390 has no reset input, so an active-low setting survives a CPU-only
-      reset and holds the pin asserted through the next boot.
-
-      That quietens the idle case only. The driver unmasks receive, transmit
-      and link-change interrupts and clears ISR from its RX thread, so the pin
-      is genuinely driven while an interrupt is pending, and a board strapping
-      on this pin has to tolerate that or force the strap.
+      Interrupt pin of the CH390. The driver configures the pin polarity of the
+      controller from the GPIO flags.
