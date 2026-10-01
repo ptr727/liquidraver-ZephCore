@@ -115,7 +115,7 @@ Verified on hardware 2026-09-30, on the board this port was written for.
 | Flash and PSRAM | 8 MB flash; `octal_psram density 0x03 (64 Mbit)`, AP vendor, 8 MB, so octal is right |
 | VDD_SPI strap | `VDD_SPI_FORCE = True`, `TIEH = 3.3 V`: the GPIO45 strap is overridden |
 | LR1110 identity | `HW:0x22 Type:0x01 FW:0x0303`; RF switch `en=0x03 rx=0x01 tx=0x03 txhp=0x02` |
-| Radio configured | `freq=927875008 bw=62 sf=7 cr=5 pwr=-9` |
+| Radio configured | `freq=927875008 bw=62 sf=7 cr=5 pwr=1` |
 | Radio receive | Discovered real nodes, so the sync word is honoured on FW `0x0303` |
 | Ethernet controller | CH390 `Found ID: 9151`; address set to the efuse base MAC plus 3 |
 | Ethernet link | Up at 100 Mbps, agreed by the switch |
@@ -193,25 +193,19 @@ ZephCore itself contributes nothing. MeshCore's framing skips any byte that is
 not a frame marker, so clients resynchronise; `meshcore-cli` does so without
 complaint.
 
-### A negative TX power is not representable to clients
+### TX power: 1 dBm is the minimum
 
-Set the TX power negative and clients report it as a large positive number:
-`meshcore-cli` prints `tx_power: 247`, and the Colorado-Mesh desktop client
-refuses it with *"Device reports 247 dBm (slider max 22 dBm)"*. Neither is a
-rendering bug.
+**The lowest valid TX power is 1 dBm. Do not use a negative value**, whether
+on the CLI, from a client, or as `CONFIG_ZEPHCORE_DEFAULT_TX_POWER_DBM`.
 
-The companion protocol carries TX power as one byte. ZephCore treats it as
-**signed** on both sides: `CMD_SET_RADIO_TX_POWER` casts to `int8_t` and accepts
--9..22, and `SELF_INFO` reports `prefs.tx_power_dbm` directly, so -9 leaves as
-`0xF7`. Clients read that byte **unsigned** against a 0..22 slider, where a
-negative value has no representation and cannot be corrected from their UI.
+The setting is unsigned on the wire, and clients offer 0..22 with 1 as the
+lowest they will set. ZephCore's Kconfig and CLI accept values down to -9, but
+a negative value wraps: -9 goes out as `0xF7`, `meshcore-cli` shows
+`tx_power: 247`, and the Colorado-Mesh desktop client rejects it with
+*"Device reports 247 dBm (slider max 22 dBm)"*. It is not a usable setting.
 
-So the floor the radio supports, and that ZephCore's own Kconfig and CLI allow,
-is outside what the protocol's clients model. **1 dBm is the practical floor**,
-being the lowest the clients offer, and it round-trips cleanly: setting it from
-a client persisted to prefs, applied to the radio live, and survived a reboot
-(`radio started: ... pwr=1`). -9 dBm remains useful for bench work on a live
-mesh, and is not a setting to leave on a deployed node.
+1 dBm round-trips cleanly. Set from a client, it persisted to prefs, applied to
+the radio live, and survived a reboot (`radio started: ... pwr=1`).
 
 ### BLE is compiled out by default
 
