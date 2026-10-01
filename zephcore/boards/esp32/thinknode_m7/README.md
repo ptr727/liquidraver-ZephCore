@@ -30,10 +30,11 @@ works, so esptool's `--before default-reset` needs no buttons.
 The bridge is not wired to the ESP32-S3's own USB pads, which cuts both ways. The
 USB identity never changes with firmware or role, so there is no re-binding to do
 and none of the identity churn native-USB ZephCore boards cause. But there is no
-JTAG and no USB CDC, so no hardware debugger and no USB companion transport: uart0
-is the only console, and the wired companion path has to be Ethernet. The ESP32-S3's native USB pads are not bonded to the connector, so
-there is no USB CDC companion on this board. There is also no reset button:
-reset by pulsing DTR/RTS or by power cycling.
+JTAG and no USB CDC, so no hardware debugger and no CDC companion transport: the
+wired companion is a plain UART on uart0 instead, which is why it and the console
+cannot both have it.
+
+There is also no reset button: reset by pulsing DTR/RTS or by power cycling.
 
 ## Pin map
 
