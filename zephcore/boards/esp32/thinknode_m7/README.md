@@ -149,22 +149,35 @@ open a raw TCP socket, so its WiFi mode reports "not supported on your device".
 Only WebSocket, WebSerial and WebBluetooth are available to it, and ZephCore
 has no WebSocket transport.
 
-### Config over USB, alongside a network client
+### Two companion transports at once, by default
 
-`boards/common/serial_companion.conf` turns uart0 into a second companion
-transport, so a config app on the USB cable and Home Assistant on TCP can be
-connected at the same time, both served by `MultiSerialInterface`:
+The default build serves **USB and TCP together**: a config app on the cable
+and Home Assistant on the network, both through `MultiSerialInterface`. That
+matters because TCP accepts a single client, so without the USB side a
+companion client and a configuration session cannot coexist.
+
+Verified on hardware: two `meshcore-cli` instances run concurrently, one on
+`-s /dev/ttyUSB0` and one on `-t <node> -p 5000`, return byte-identical device
+info, and a third-party desktop client on TCP coexists with a USB session.
+
+**BLE is off by default** (`CONFIG_BT=n`), because it has no runtime off switch
+on a board with no display and its passkey is a published constant. See the
+BLE section below.
+
+**The console is the cost.** This board has exactly one UART, so it is the log
+console or the companion, never both. `board.conf` sets `CONFIG_UART_CONSOLE=n`
+and `CONFIG_SHELL=n` so boot and log output cannot corrupt the binary protocol
+stream. A debug build has to say so explicitly, because `debug.conf` turns
+logging on without re-enabling the console and `debug_esp32.conf` aims the log
+backend at the UART the companion is using:
 
 ```bash
 west build -b thinknode_m7/esp32s3/procpu zephcore --pristine -- \
-  -DEXTRA_CONF_FILE="boards/common/serial_companion.conf"
+  -DEXTRA_CONF_FILE="boards/common/debug.conf" \
+  -DCONFIG_ZEPHCORE_COMPANION_SERIAL=n -DCONFIG_UART_CONSOLE=y
 ```
 
-**The cost is the console.** This board has exactly one UART, so it is the log
-console or the companion, never both: that conf sets `CONFIG_UART_CONSOLE=n`
-and `CONFIG_SHELL=n` so boot and log output cannot corrupt the binary protocol
-stream. Use the default build while bringing the board up and this one once it
-is in service.
+Use that during bring-up, and the default once the board is in service.
 
 ### A negative TX power confuses every client
 
