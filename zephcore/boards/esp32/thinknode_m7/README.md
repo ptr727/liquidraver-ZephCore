@@ -4,8 +4,9 @@ ESP32-S3 bare die (8 MB flash QIO, 8 MB OPI PSRAM) with a Semtech LR1110 radio a
 a WCH CH390 SPI Ethernet controller, optionally powered over PoE. No display, no
 GNSS, no buzzer, no battery and no SD card.
 
-The board's purpose in ZephCore is a wired companion: the app and Home Assistant
-reach it over TCP on the LAN rather than over BLE or USB.
+The board's purpose in ZephCore is a wired companion: the app reaches it over
+TCP on the LAN rather than over BLE or USB, and Home Assistant is expected to
+do the same, though that is not yet tested.
 
 ## Build
 
@@ -32,8 +33,8 @@ The bridge is not wired to the ESP32-S3's own USB pads, which cuts both ways. Th
 USB identity never changes with firmware or role, so there is no re-binding to do
 and none of the identity churn native-USB ZephCore boards cause. But there is no
 JTAG and no USB CDC, so no hardware debugger and no CDC companion transport: the
-wired companion is a plain UART on uart0 instead, which is why it and the console
-cannot both have it.
+serial companion is a plain UART on uart0 instead, which is why it and the
+console cannot both have it.
 
 There is also no reset button: reset by pulsing DTR/RTS or by power cycling.
 
