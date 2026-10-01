@@ -165,8 +165,12 @@ So a negative TX power is usable from ZephCore's own CLI and Kconfig but is
 outside what the companion protocol's clients model. -9 dBm is the radio's
 floor and is useful for bench work on a live mesh; it is not a setting to leave
 on a deployed node, and a client cannot correct it with its slider because the
-value it is shown is not on the scale. Set a sane positive power for normal
-use.
+value it is shown is not on the scale.
+
+**1 dBm is the practical floor**, being the lowest the clients offer, and it
+round-trips cleanly: setting it from the Colorado-Mesh client persisted to
+prefs, applied to the radio live, and survived a reboot
+(`radio started: ... pwr=1`). Anything at or above 0 behaves normally.
 
 **Only one TCP client at a time** — the transport logs `Second client rejected
 (already connected)` and closes the second connection. That matters for a node whose job is to serve
