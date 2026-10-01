@@ -122,7 +122,7 @@ Verified on hardware 2026-09-30, on the board this port was written for.
 | DHCP | Lease acquired |
 | Reachability | Ping 5/5 at 1.58 ms average; the companion's TCP port open from another host |
 | Companion protocol | `CMD_DEVICE_QUERY` over TCP answered `DEVICE_INFO`: model `ThinkNode M7`, version `1.17.6-zephcore` |
-| DHCP hostname in DNS | `518ce3cf.home.insanegenius.net` resolves and pings, some minutes after first boot |
+| DHCP hostname in DNS | `<node-name>.<lan-domain>` resolves and pings, some minutes after first boot |
 
 Getting there needed three fixes in the DM9051 driver patch: the PHY power-on
 has to be re-asserted after the MAC soft reset, the pre-transmit NSR poll must
@@ -198,8 +198,8 @@ complaint.
 **The lowest valid TX power is 1 dBm. Do not use a negative value**, whether
 on the CLI, from a client, or as `CONFIG_ZEPHCORE_DEFAULT_TX_POWER_DBM`.
 
-The setting is unsigned on the wire, and clients offer 0..22 with 1 as the
-lowest they will set. ZephCore's Kconfig and CLI accept values down to -9, but
+The setting is unsigned on the wire, and 1 dBm is the lowest a client will
+set. ZephCore's Kconfig and CLI accept values down to -9, but
 a negative value wraps: -9 goes out as `0xF7`, `meshcore-cli` shows
 `tx_power: 247`, and the Colorado-Mesh desktop client rejects it with
 *"Device reports 247 dBm (slider max 22 dBm)"*. It is not a usable setting.
@@ -219,12 +219,13 @@ the companion protocol exposes no command for it, and the CLI has none; the
 reach. A board with no display and no buttons therefore has no way to stop it
 advertising.
 
-And what it advertises is weak. The pairing passkey is
-`CONFIG_ZEPHCORE_BLE_PASSKEY`, a compile-time constant defaulting to **123456**,
-and a board with no display cannot show a generated one, so the value is fixed
-and published in the source. The device reports its current value in the
-`DEVICE_INFO` response. On a node nobody will ever pair with, that is a
-permanently advertising admission path with a known secret.
+And what it advertises is weak. The pairing passkey defaults to
+`CONFIG_ZEPHCORE_BLE_PASSKEY`, **123456**, and a board with no display cannot
+show a generated one. A client can set a private PIN with `CMD_SET_DEVICE_PIN`,
+but any client on TCP or the serial companion can also read the current PIN
+from `DEVICE_INFO`, unauthenticated. On a node nobody will ever pair with, that
+is a permanently advertising admission path with a secret that is either the
+published default or readable by anyone on the LAN.
 
 To build *with* BLE, drop `CONFIG_BT=n` from `board.conf`. Note the consequence
 before doing so on a node in service: TCP accepts a single client, so BLE is
@@ -232,8 +233,8 @@ what would let a configuration session coexist with Home Assistant, and without
 either it the companion build (above) is the way to get that.
 
 DHCP hostname: the node name goes out as DHCP option 12, sanitised to a DNS
-label. Verified end to end — the lease records `518ce3cf`, the switch shows it on
-the port, and the router resolves `518ce3cf.home.insanegenius.net`. Allow some
+label. Verified end to end: the lease records the node name, the switch shows
+it on the port, and the router resolves `<node-name>.<lan-domain>`. Allow some
 minutes after first boot before the name resolves.
 
 Not yet exercised: sustained throughput, a long run on PoE alone, the GPIO4
@@ -255,20 +256,20 @@ outside the legal range, where the read pointer cannot be trusted.
 
 Measured under a 5 packet per second ping, ten minutes each:
 
-| | link downs | DHCP binds | dropped frames |
-|---|---|---|---|
-| before | 3 | 4 | — |
-| after | **0** | 1 (the initial one) | 3 |
+| | link downs | DHCP binds |
+|---|---|---|
+| before | 3 | 4 |
+| after | **0** | 1 (the initial one) |
 
 End to end afterwards: 600 pings, 0% loss, 1.44 ms average, 2.17 ms worst.
 
-A dropped frame still logs `RX failed (err -5)` at error level, which overstates
-what is a normal congestion event. Cosmetic, and left alone because changing it
-means changing the function's return contract.
+A skipped frame is counted as an RX error and logged only at debug level.
 
 ## Not ported
 
 Display, GNSS, buzzer, battery monitoring and SD card: none are fitted. The
 button's key mapping is deferred until its thresholds are characterised. WiFi is
 left out of the board manifest because this board's network path is the wired
-CH390 and it is unverified whether the bare die has a WiFi antenna fitted.
+CH390 and it is unverified whether the bare die has a WiFi antenna fitted. The
+repeater build still enables WiFi for OTA, as on every ESP32-S3 repeater, and
+that is untested on this board.

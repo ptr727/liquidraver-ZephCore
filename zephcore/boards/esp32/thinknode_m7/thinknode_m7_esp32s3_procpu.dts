@@ -97,9 +97,9 @@
 /*
  * SPI3 — WCH CH390 Ethernet. 20 MHz: the part is rated 50 MHz typical and
  * 72 MHz maximum at 3.3V (CH390DS1 v1.8), so the ceiling here is not the chip
- * but the GPIO matrix, since these pads have no SPI3 IOMUX route. 20 MHz ran
- * clean on this hardware under another firmware and is far more than the
- * companion protocol needs; it is unverified under ZephCore.
+ * but the GPIO matrix, since these pads have no SPI3 IOMUX route. 20 MHz is
+ * far more than the companion protocol needs, and runs clean under ZephCore on
+ * this board.
  */
 &spi3 {
 	status = "okay";
@@ -128,10 +128,10 @@
 		 * unmasks receive, transmit and link-change interrupts, and clears ISR
 		 * only from its RX thread, so the CH390 does drive this pin high
 		 * while an interrupt is pending. A reset landing in that window
-		 * presents a high strap to the next boot. Whether that matters
-		 * depends on whether VDD_SPI is forced by efuse on this board, which
-		 * the three vendor firmwares that also wire GPIO45 to this interrupt
-		 * suggest but do not prove. Check it with espefuse at bring-up. */
+		 * presents a high strap to the next boot. On this board it does not
+		 * matter: espefuse reports VDD_SPI_FORCE set with TIEH at 3.3V, so the
+		 * strap is ignored. Re-check the efuse before relying on that for
+		 * another unit. */
 		int-gpios = <&gpio1 13 GPIO_ACTIVE_HIGH>;	/* GPIO45 */
 	};
 };
@@ -146,7 +146,8 @@
 };
 
 /* Enabled in DT as on every other ESP32-S3 board; the driver is only built
- * when CONFIG_WIFI is set, which this board's manifest does not ask for. */
+ * when CONFIG_WIFI is set. Companion builds leave it off, and repeater builds
+ * turn it on for OTA, as on every ESP32-S3 repeater. */
 &wifi {
 	status = "okay";
 };
