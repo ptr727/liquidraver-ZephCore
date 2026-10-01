@@ -10,8 +10,8 @@
 
 #include "CompanionEthernet.h"
 
-#include "../helpers/net_hostname_label.h"
-#include "../helpers/pm_sleep_guard.h"
+#include <helpers/net_hostname_label.h>
+#include <helpers/pm_sleep_guard.h>
 
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/kernel.h>
