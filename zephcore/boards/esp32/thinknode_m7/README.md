@@ -19,9 +19,10 @@ west build -b thinknode_m7/esp32s3/procpu zephcore --pristine -- \
 ```
 
 The companion build serves the app over TCP on port 5000 on the wired link,
-so Home Assistant's MeshCore integration reaches it as an ordinary
-TCP companion. The Ethernet stack is added automatically because the board
-manifest declares `capabilities: ethernet: true`.
+the same as every other ZephCore TCP companion, so Home Assistant's MeshCore
+integration should reach it unchanged. That is not yet tested. The Ethernet
+stack is added automatically because the board manifest declares
+`capabilities: ethernet: true`.
 
 Console is uart0 at 115200 through a dedicated **CH340K** bridge, which enumerates
 as `1a86:7522`, binds `ch341-uart` and gives `/dev/ttyUSB0`. Its auto-reset circuit
@@ -198,10 +199,9 @@ complaint.
 **The lowest valid TX power is 1 dBm. Do not use a negative value**, whether
 on the CLI, from a client, or as `CONFIG_ZEPHCORE_DEFAULT_TX_POWER_DBM`.
 
-The setting is unsigned on the wire, and 1 dBm is the lowest a client will
-set. ZephCore's Kconfig and CLI accept values down to -9, but
-a negative value wraps: -9 goes out as `0xF7`, `meshcore-cli` shows
-`tx_power: 247`, and the Colorado-Mesh desktop client rejects it with
+The setting is unsigned on the wire. ZephCore's Kconfig and CLI accept values
+down to -9, but a negative value wraps: -9 goes out as `0xF7`, `meshcore-cli`
+shows `tx_power: 247`, and the Colorado-Mesh desktop client rejects it with
 *"Device reports 247 dBm (slider max 22 dBm)"*. It is not a usable setting.
 
 1 dBm round-trips cleanly. Set from a client, it persisted to prefs, applied to
