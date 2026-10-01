@@ -168,19 +168,32 @@ minutes after first boot before the name resolves.
 Not yet exercised: sustained throughput, a long run on PoE alone, the GPIO4
 button ladder, and the Home Assistant integration itself.
 
-### Known issue: the link flaps
+### Resolved: the link used to flap under load
 
-The link drops and recovers roughly once every couple of minutes. Measured over
-150 s: up at 2.3 s, DHCP bound at 6.4 s, down at 42.6 s, up again 1.7 s later,
-re-bound at 49.4 s. It always recovers on its own and DHCP re-binds to the same
-address, so the node stays usable, but it is not understood and it is not
-acceptable for a node meant to sit on a shelf.
+Early bring-up saw the link drop and recover roughly every couple of minutes,
+always self-healing after about 1.7 s with a fresh DHCP bind. The cause was in
+the driver, not the hardware, and is fixed in the CH390 patch.
 
-Not yet separated: whether this is the PHY, the switch renegotiating PoE class,
-or the driver's link-change handling. The switch reports the port as PoE+ at
-100 Mbps throughout. Worth noting that slow DNS registration has previously been
-a symptom of a half-working link rather than of propagation delay, so this is the
-first thing to rule out if a name is slow to appear.
+`eth_dm9051_recv_pkt()` treated any RX status error as fatal and called
+`hw_start()`, which resets the MAC and the PHY and therefore drops the carrier.
+The status bit that actually fired was the **FIFO overflow** — ordinary
+congestion on a busy segment — so every busy moment cost a carrier loss, a
+renegotiation and a new DHCP cycle. A frame with a usable length is now skipped
+in the FIFO and reception continues; the restart is kept only for a length
+outside the legal range, where the read pointer cannot be trusted.
+
+Measured under a 5 packet per second ping, ten minutes each:
+
+| | link downs | DHCP binds | dropped frames |
+|---|---|---|---|
+| before | 3 | 4 | — |
+| after | **0** | 1 (the initial one) | 3 |
+
+End to end afterwards: 600 pings, 0% loss, 1.44 ms average, 2.17 ms worst.
+
+A dropped frame still logs `RX failed (err -5)` at error level, which overstates
+what is a normal congestion event. Cosmetic, and left alone because changing it
+means changing the function's return contract.
 
 ## Not ported
 

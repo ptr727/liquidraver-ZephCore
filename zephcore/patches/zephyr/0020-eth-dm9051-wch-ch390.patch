@@ -36,6 +36,17 @@ each found and then confirmed fixed on an Elecrow ThinkNode M7 with a CH390:
 Defects 2 and 3 are not CH390-specific and look like they affect the DM9051
 equally; no DM9051 board exists in-tree to confirm that against.
 
+4. An RX status error restarted the whole controller. hw_start() resets the
+   MAC and the PHY, so it drops the carrier and forces a renegotiation. The
+   status bit that actually fires is the FIFO overflow, which is ordinary
+   congestion on a busy segment, so every busy moment cost a carrier loss, a
+   link renegotiation and a fresh DHCP cycle: measured three link bounces in
+   ten minutes under a 5 packet per second ping. A frame whose length is
+   usable is now skipped in the FIFO and reception continues; the restart is
+   kept only for a length outside the legal range, where the read pointer
+   cannot be trusted and there is nothing to skip past. The same ten-minute
+   load then produced one dropped frame and no link event at all.
+
 Verified on hardware: link up at 100 Mbps, DHCP lease acquired, ping 3/3 at
 1.9 ms average and the companion's TCP port reachable from another host.
 
@@ -145,7 +156,61 @@ diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
  		goto out_spi_unlock;
  	}
  
-@@ -679,7 +710,17 @@
+@@ -506,17 +537,16 @@
+ 
+ 	rx_len = sys_get_le16(rxhdr.len);
+ 
+-	/* Check for RX errors */
+-	if ((rxhdr.status & ~DM9051_RSR_MF) > 0 ||
+-	    !IN_RANGE(rx_len, ETH_DM9051_MIN_FRAME_SIZE, sizeof(data->rx_buf))) {
+-		if ((rxhdr.status & ~DM9051_RSR_MF) > 0) {
+-			LOG_DBG("%s: RX status error: %02x", dev->name, rxhdr.status);
+-		}
+-
+-		if (!IN_RANGE(rx_len, ETH_DM9051_MIN_FRAME_SIZE, sizeof(data->rx_buf))) {
+-			LOG_DBG("%s: RX length out of range: %u (min: %u, max: %zu)",
+-				dev->name, rx_len, ETH_DM9051_MIN_FRAME_SIZE, sizeof(data->rx_buf));
+-		}
++	/*
++	 * A length outside the legal range means the FIFO read pointer can no
++	 * longer be trusted: there is no way to know where this frame ends, so
++	 * nothing can be skipped and the controller has to be restarted. That
++	 * restart resets the MAC and the PHY and therefore drops the carrier,
++	 * so it is reserved for exactly this case.
++	 */
++	if (!IN_RANGE(rx_len, ETH_DM9051_MIN_FRAME_SIZE, sizeof(data->rx_buf))) {
++		LOG_DBG("%s: RX length out of range: %u (min: %u, max: %zu)",
++			dev->name, rx_len, ETH_DM9051_MIN_FRAME_SIZE, sizeof(data->rx_buf));
+ 
+ 		ret = eth_dm9051_hw_start(dev, data->iface);
+ 		if (ret < 0) {
+@@ -525,6 +555,25 @@
+ 		return NULL;
+ 	}
+ 
++	/*
++	 * A status error with a usable length is a frame to drop, not a reason
++	 * to restart the controller. The common one is a FIFO overflow, which
++	 * is ordinary congestion on a busy segment; restarting there turns a
++	 * dropped frame into a carrier loss, a link renegotiation and a fresh
++	 * DHCP cycle every time the segment gets busy. The length is
++	 * trustworthy here, so the frame is skipped in the FIFO instead and
++	 * reception continues.
++	 */
++	if ((rxhdr.status & ~DM9051_RSR_MF) > 0) {
++		LOG_DBG("%s: RX status error: %02x, dropping frame", dev->name, rxhdr.status);
++
++		ret = eth_dm9051_spi_read_mem(dev, DM9051_MRCMD, NULL, rx_len);
++		if (ret < 0) {
++			LOG_ERR("%s: Failed to discard RX data (err %d)", dev->name, ret);
++		}
++		return NULL;
++	}
++
+ 	/* Alloc RX net_pkt and subtract 4 from RX length to discard CRC */
+ 	pkt = net_pkt_rx_alloc_with_buffer(data->iface,
+ 					   rx_len - ETH_DM9051_CRC_SIZE,
+@@ -679,7 +728,17 @@
  	data = dev->data;
  
  	while (true) {
@@ -164,7 +229,7 @@ diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
  
  		ret = eth_dm9051_spi_read_reg(dev, DM9051_ISR, &isr);
  		if (ret < 0) {
-@@ -987,24 +1028,32 @@
+@@ -987,24 +1046,32 @@
  	return 0;
  }
  
