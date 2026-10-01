@@ -193,7 +193,7 @@ diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
  
  		ret = eth_dm9051_hw_start(dev, data->iface);
  		if (ret < 0) {
-@@ -525,6 +555,28 @@
+@@ -525,6 +555,38 @@
  		return NULL;
  	}
  
@@ -211,7 +211,17 @@ diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
 +
 +		ret = eth_dm9051_spi_read_mem(dev, DM9051_MRCMD, NULL, rx_len);
 +		if (ret < 0) {
-+			LOG_ERR("%s: Failed to discard RX data (err %d)", dev->name, ret);
++			/* Part of the frame may have been clocked out before the
++			 * failure, so the read pointer is no longer known to sit
++			 * on a frame boundary. That is the same unrecoverable
++			 * state as a bad length, and has the same remedy. */
++			LOG_ERR("%s: Failed to discard RX data (err %d), restarting",
++				dev->name, ret);
++			ret = eth_dm9051_hw_start(dev, data->iface);
++			if (ret < 0) {
++				LOG_ERR("%s: Failed to restart HW after RX error (err %d)",
++					dev->name, ret);
++			}
 +			return NULL;
 +		}
 +
@@ -222,7 +232,7 @@ diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
  	/* Alloc RX net_pkt and subtract 4 from RX length to discard CRC */
  	pkt = net_pkt_rx_alloc_with_buffer(data->iface,
  					   rx_len - ETH_DM9051_CRC_SIZE,
-@@ -581,11 +633,22 @@
+@@ -581,11 +643,22 @@
  			break;
  		}
  
@@ -248,7 +258,7 @@ diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
  		}
  
  		/* Push the net_pkt in the network stack */
-@@ -679,7 +742,17 @@
+@@ -679,7 +752,17 @@
  	data = dev->data;
  
  	while (true) {
@@ -267,7 +277,7 @@ diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
  
  		ret = eth_dm9051_spi_read_reg(dev, DM9051_ISR, &isr);
  		if (ret < 0) {
-@@ -987,24 +1060,32 @@
+@@ -987,24 +1070,32 @@
  	return 0;
  }
  
