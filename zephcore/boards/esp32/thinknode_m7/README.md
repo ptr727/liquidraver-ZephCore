@@ -274,7 +274,11 @@ Measured under a 5 packet per second ping, ten minutes each:
 
 End to end afterwards: 600 pings, 0% loss, 1.44 ms average, 2.17 ms worst.
 
-A skipped frame is counted as an RX error and logged only at debug level.
+A frame skipped for a status error is counted as an RX error and logged only at
+debug level. An oversized frame is counted the same way but logged at error
+level, as `RX failed (err -122)` (-EMSGSIZE in picolibc), and it ends that pass
+over the receive buffer, so any frames queued behind it wait for the next
+receive interrupt.
 
 ## Not ported
 
