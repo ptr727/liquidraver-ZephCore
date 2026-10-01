@@ -7,6 +7,16 @@
  */
 
 / {
+	chosen {
+		/* Selects uart0 as the plain-UART companion backend, used only when
+		 * a build passes boards/common/serial_companion.conf. Inert
+		 * otherwise, and without it that conf has no backend to bind to on
+		 * this board, because the fallback is a cdc-acm-uart node the M7
+		 * does not have. The console and the companion cannot share the one
+		 * UART, so that conf turns the console off. */
+		zephcore,companion-uart = &uart0;
+	};
+
 	aliases {
 		led0 = &status_led;
 		lora-tx-led = &tx_led;

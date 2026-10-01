@@ -144,9 +144,27 @@ the **Colorado-Mesh desktop client** (<https://github.com/Colorado-Mesh/mesh-cli
 which connects over TCP and is what the maintainer uses, and the MeshCore
 companion app's **"Connect via WiFi"** (TCP/Network) mode.
 
-The MeshCore **web** client cannot: a browser cannot open a raw TCP socket, so
-its WiFi mode reports "not supported on your device". Only WebSocket, WebSerial
-and WebBluetooth are available to it, and ZephCore has no WebSocket transport.
+The MeshCore **web** client cannot reach it over the network: a browser cannot
+open a raw TCP socket, so its WiFi mode reports "not supported on your device".
+Only WebSocket, WebSerial and WebBluetooth are available to it, and ZephCore
+has no WebSocket transport.
+
+### Config over USB, alongside a network client
+
+`boards/common/serial_companion.conf` turns uart0 into a second companion
+transport, so a config app on the USB cable and Home Assistant on TCP can be
+connected at the same time, both served by `MultiSerialInterface`:
+
+```bash
+west build -b thinknode_m7/esp32s3/procpu zephcore --pristine -- \
+  -DEXTRA_CONF_FILE="boards/common/serial_companion.conf"
+```
+
+**The cost is the console.** This board has exactly one UART, so it is the log
+console or the companion, never both: that conf sets `CONFIG_UART_CONSOLE=n`
+and `CONFIG_SHELL=n` so boot and log output cannot corrupt the binary protocol
+stream. Use the default build while bringing the board up and this one once it
+is in service.
 
 ### A negative TX power confuses every client
 
