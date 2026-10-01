@@ -149,66 +149,48 @@ open a raw TCP socket, so its WiFi mode reports "not supported on your device".
 Only WebSocket, WebSerial and WebBluetooth are available to it, and ZephCore
 has no WebSocket transport.
 
-### Two companion transports at once, by default
+### uart0 is the console or a companion, never both
 
-The default build serves **USB and TCP together**: a config app on the cable
-and Home Assistant on the network, both through `MultiSerialInterface`. That
-matters because TCP accepts a single client, so without the USB side a
-companion client and a configuration session cannot coexist.
+This board has exactly one UART behind the CH340K, and the binary companion
+protocol cannot share a line with boot and log output. So it is one role or
+the other, chosen at build time.
 
-Verified on hardware: two `meshcore-cli` instances run concurrently, one on
-`-s /dev/ttyUSB0` and one on `-t <node> -p 5000`, return byte-identical device
-info, and a third-party desktop client on TCP coexists with a USB session.
+**Default: the console.** A board nobody can read is a board nobody can bring
+up, so the stock build keeps uart0 as the console and reaches the companion
+over TCP only. `CONFIG_LOG` is off as in any ZephCore release build; add
+`boards/common/debug.conf` for application logs.
 
-**BLE is off by default** (`CONFIG_BT=n`), because it has no runtime off switch
-on a board with no display and its passkey is a published constant. See the
-BLE section below.
-
-**The console is the cost.** This board has exactly one UART, so it is the log
-console or the companion, never both. `board.conf` sets `CONFIG_UART_CONSOLE=n`
-and `CONFIG_SHELL=n` so boot and log output cannot corrupt the binary protocol
-stream. A debug build has to say so explicitly, because `debug.conf` turns
-logging on without re-enabling the console and `debug_esp32.conf` aims the log
-backend at the UART the companion is using:
+**Opt in to the companion** when a config app on the cable is worth more than
+logs. TCP accepts a single client, so this is what lets a configuration
+session coexist with Home Assistant:
 
 ```bash
 west build -b thinknode_m7/esp32s3/procpu zephcore --pristine -- \
-  -DEXTRA_CONF_FILE="boards/common/debug.conf" \
-  -DCONFIG_ZEPHCORE_COMPANION_SERIAL=n -DCONFIG_UART_CONSOLE=y
+  -DEXTRA_CONF_FILE="boards/common/serial_companion.conf"
 ```
 
-Use that during bring-up, and the default once the board is in service.
+Verified on hardware: two `meshcore-cli` instances run concurrently, one on
+`-s /dev/ttyUSB0` and one on `-t <node> -p 5000`, returning byte-identical
+device info, and a third-party desktop client on TCP coexists with a USB
+session.
 
-### A negative TX power confuses every client
+Two things to know before relying on the companion build.
 
-Set the TX power negative and clients report it as a large positive number:
-`meshcore-cli` prints `tx_power: 247`, and the Colorado-Mesh desktop client says
-*"Device reports 247 dBm (slider max 22 dBm)"*. This is not a rendering bug in
-either of them.
+`ZEPHCORE_COMPANION_SERIAL` defaults to `y` for a board that has no Bluetooth
+and names `zephcore,companion-uart`, which this board does on both counts.
+That default is meant for a board whose UART is its *only* companion link; here
+it is not, so `board.conf` pins it off and `serial_companion.conf` turns it
+back on together with disabling the console. Without that pin the companion
+and the console would both own uart0 and corrupt each other.
 
-The companion protocol carries TX power as a single byte. ZephCore treats it as
-**signed**: it accepts -9..22 in `CMD_SET_RADIO_TX_POWER` (`int8_t power =
-(int8_t)data[1]`) and reports `prefs.tx_power_dbm` straight into the
-`SELF_INFO` byte, so -9 goes out as `0xF7`. The clients read that byte as
-**unsigned** and offer a 0..22 slider, where -9 has no representation at all.
-
-So a negative TX power is usable from ZephCore's own CLI and Kconfig but is
-outside what the companion protocol's clients model. -9 dBm is the radio's
-floor and is useful for bench work on a live mesh; it is not a setting to leave
-on a deployed node, and a client cannot correct it with its slider because the
-value it is shown is not on the scale.
-
-**1 dBm is the practical floor**, being the lowest the clients offer, and it
-round-trips cleanly: setting it from the Colorado-Mesh client persisted to
-prefs, applied to the radio live, and survived a reboot
-(`radio started: ... pwr=1`). Anything at or above 0 behaves normally.
-
-**Only one TCP client at a time** — the transport logs `Second client rejected
-(already connected)` and closes the second connection. That matters for a node whose job is to serve
-Home Assistant: HA occupies the single TCP slot, so keep BLE enabled if you also
-want to configure the node from the phone app. Every connected transport is
-served at once (`MultiSerialInterface`), so BLE and TCP run in parallel and both
-see every frame.
+The line is not clean at boot, and nothing in firmware can make it so. The
+ESP-ROM and the second-stage bootloader write about 2 KB of plain text to
+uart0 before Zephyr runs, and the bridge's auto-reset circuit means opening
+the port reboots the board, so a client receives that banner on every connect.
+Measured at 1978 bytes each time, followed by complete silence once booted, so
+ZephCore itself contributes nothing. MeshCore's framing skips any byte that is
+not a frame marker, so clients resynchronise; `meshcore-cli` does so without
+complaint.
 
 ### BLE on a board with no display
 
