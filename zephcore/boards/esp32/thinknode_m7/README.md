@@ -179,12 +179,36 @@ want to configure the node from the phone app. Every connected transport is
 served at once (`MultiSerialInterface`), so BLE and TCP run in parallel and both
 see every frame.
 
-The BLE pairing passkey is `CONFIG_ZEPHCORE_BLE_PASSKEY`, **123456** by default.
-It is a compile-time constant, overridable per node through the `ble_pin` pref,
-and the device reports its current value in the `DEVICE_INFO` response. A fixed
-well-known passkey is worth thinking about on a node that sits powered on a
-shelf: `ble_off` in the prefs turns BLE advertising off once the node is
-configured.
+### BLE on a board with no display
+
+The pairing passkey is `CONFIG_ZEPHCORE_BLE_PASSKEY`, **123456** by default. It
+is a compile-time constant and a board with no display cannot show a generated
+one, so the value is fixed and published in the source. The device reports its
+current value in the `DEVICE_INFO` response. On a node nobody will pair with,
+that is a permanently advertising admission path with a known secret.
+
+**There is no runtime way to turn BLE off on this board.** The `ble_disabled`
+pref is written only by the on-device UI button
+(`helpers/ui/ui_mesh_actions.cpp`), the companion protocol exposes no command
+for it, and the CLI has none either; the `ble_off` key in the prefs JSON is a
+file on `/lfs`, not something a client can reach. A board with no display and
+no buttons therefore cannot disable it at all at runtime.
+
+Compiling it out is the only option, and
+`boards/common/no_ble.conf` does that:
+
+```bash
+west build -b thinknode_m7/esp32s3/procpu zephcore --pristine -- \
+  -DEXTRA_CONF_FILE="boards/common/no_ble.conf"
+```
+
+Verified on this board: the TCP companion works unchanged with BLE gone, and
+internal DRAM drops from 68.1% to 51.5% with flash from 631 KB to 420 KB.
+
+The trade-off is the one in the paragraph above: TCP accepts a single client,
+so with BLE gone a companion client and a diagnostic session cannot both be
+connected. Keep BLE until there is a second management path, or accept that
+configuration means disconnecting Home Assistant first.
 
 DHCP hostname: the node name goes out as DHCP option 12, sanitised to a DNS
 label. Verified end to end — the lease records `518ce3cf`, the switch shows it on
