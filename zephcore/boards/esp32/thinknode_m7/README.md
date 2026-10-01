@@ -140,11 +140,33 @@ TCP-capable MeshCore client works. Two that do:
 uvx --from meshcore-cli meshcore-cli -t <node-address> -p 5000 infos
 ```
 
-and the MeshCore companion app's **"Connect via WiFi"** (TCP/Network) mode,
-pointed at the node's address on port 5000.
+the **Colorado-Mesh desktop client** (<https://github.com/Colorado-Mesh/mesh-client>),
+which connects over TCP and is what the maintainer uses, and the MeshCore
+companion app's **"Connect via WiFi"** (TCP/Network) mode.
 
-Note `meshcore-cli` prints `tx_power` unsigned, so a configured -9 dBm reads as
-`247`. That is the CLI's formatting, not the node's setting.
+The MeshCore **web** client cannot: a browser cannot open a raw TCP socket, so
+its WiFi mode reports "not supported on your device". Only WebSocket, WebSerial
+and WebBluetooth are available to it, and ZephCore has no WebSocket transport.
+
+### A negative TX power confuses every client
+
+Set the TX power negative and clients report it as a large positive number:
+`meshcore-cli` prints `tx_power: 247`, and the Colorado-Mesh desktop client says
+*"Device reports 247 dBm (slider max 22 dBm)"*. This is not a rendering bug in
+either of them.
+
+The companion protocol carries TX power as a single byte. ZephCore treats it as
+**signed**: it accepts -9..22 in `CMD_SET_RADIO_TX_POWER` (`int8_t power =
+(int8_t)data[1]`) and reports `prefs.tx_power_dbm` straight into the
+`SELF_INFO` byte, so -9 goes out as `0xF7`. The clients read that byte as
+**unsigned** and offer a 0..22 slider, where -9 has no representation at all.
+
+So a negative TX power is usable from ZephCore's own CLI and Kconfig but is
+outside what the companion protocol's clients model. -9 dBm is the radio's
+floor and is useful for bench work on a live mesh; it is not a setting to leave
+on a deployed node, and a client cannot correct it with its slider because the
+value it is shown is not on the scale. Set a sane positive power for normal
+use.
 
 **Only one TCP client at a time** — the transport logs `Second client rejected
 (already connected)` and closes the second connection. That matters for a node whose job is to serve
