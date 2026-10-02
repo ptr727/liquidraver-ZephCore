@@ -467,7 +467,13 @@ void section_i2c_scan(Sink *s)
 			if (rc == -ETIMEDOUT || rc == -EBUSY) {
 				/* A dead or held bus can take the driver's whole
 				 * timeout on every address, blocking the CLI thread
-				 * for most of a minute. -EIO is an ordinary miss. */
+				 * for most of a minute. -EIO is an ordinary miss.
+				 * Flush what was found first, so it reads as found
+				 * before the stop. */
+				if (used > header) {
+					sink_line(s, "%s", line);
+					used = header;
+				}
 				sink_line(s, "%s: bus not responding at 0x%02x (err %d), scan stopped",
 					  bus->name, addr, rc);
 				stuck = true;
