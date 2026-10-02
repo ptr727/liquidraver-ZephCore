@@ -561,11 +561,12 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 		if (cap > MAX_FRAME_SIZE - 1) {
 			cap = MAX_FRAME_SIZE - 1;
 		}
-		/* A local request's "xx|" prefix shares that frame too. */
+#endif
+		/* replyCap() does not take a local request's "xx|" prefix off, but
+		 * every role's handleCommand() has already moved reply past it. */
 		if (sender_timestamp == 0 && _reply_hdr_used < cap) {
 			cap -= _reply_hdr_used;
 		}
-#endif
 		zephcore_hw::handle(command, reply, cap, sender_timestamp == 0,
 				    _board, _rtc, _callbacks);
 	} else if (memcmp(command, "ver", 3) == 0) {
