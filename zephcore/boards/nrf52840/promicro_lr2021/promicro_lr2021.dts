@@ -62,10 +62,9 @@
 		regulator-name = "vcc3v3-enable";
 		enable-gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
 		regulator-boot-on;
-		/* Documents the module's requirement, but do not rely on it:
-		 * regulator-boot-on sends regulator_common_init() down the
-		 * refcount-only branch, so regulator_delay() never runs and this
-		 * value is inert. The real settle time comes from lr20xx_hal_reset(),
+		/* The module's requirement. It runs at boot (Zephyr 3b4821f1ba6,
+		 * pinned from 1.17.5; it was skipped before), but do not rely on
+		 * it alone: the real settle time comes from lr20xx_hal_reset(),
 		 * which the driver runs (with two retries, 10 ms apart) before any
 		 * SPI traffic — and at LORA_INIT_PRIORITY 90 against this rail's 75.
 		 * Anything put behind this rail that does NOT reset-then-wait needs
@@ -147,7 +146,7 @@
 
 		reset-gpios = <&gpio0  9 GPIO_ACTIVE_LOW>;
 		busy-gpios  = <&gpio0 29 GPIO_ACTIVE_HIGH>;
-		dio1-gpios  = <&gpio0 10 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
+		irq-gpios  = <&gpio0 10 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
 		irq-dio = <9>;   /* chip DIO9 → module pin 15 → MCU P0.10 */
 
 		/* TCXO: tried 1800mV on DIO3 (per Meshtastic diy_tcxo) — it WEDGED
@@ -161,11 +160,11 @@
 		 * Config from Semtech reference ral_lr20xx_bsp.c:
 		 *   DIO5: RX_LF | TX_HF
 		 *   DIO6: RX_LF | TX_LF | RX_HF | TX_HF (always on) */
-		rfswitch-enable  = <0x03>;
-		rfswitch-standby = <0x00>;
-		rfswitch-rx      = <0x03>;
-		rfswitch-tx      = <0x02>;
-		rfswitch-tx-hp   = <0x03>;
+		rfsw-enable  = <0x03>;
+		rfsw-standby = <0x00>;
+		rfsw-rx      = <0x03>;
+		rfsw-tx      = <0x02>;
+		rfsw-tx-hp   = <0x03>;
 	};
 };
 

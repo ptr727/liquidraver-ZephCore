@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include "LoRaConfig.h"
 
 /* LEDS_RADIO_* / LEDS_HB_* mode values for the leds_radio_mode and leds_hb_mode
  * fields below.  They live in led_gate.h because the heartbeat consumers are C
@@ -129,8 +130,17 @@ struct NodePrefs {
 	uint8_t leds_hb_mode;           // LEDS_HB_* — heartbeat LED behaviour (0 = all, as before)
 	// Power saving
 	uint8_t powersaving_enabled;
+	/* 1 = powersaving_enabled is a real choice.  The field was stored but
+	 * did nothing before ESP32 light sleep honoured it (2026-09-26), so a
+	 * stored 0 without this marker takes the build's default once
+	 * (powersaving_upgrade). */
+	uint8_t powersaving_set;
 	// GPS settings
 	uint8_t gps_enabled;
+	/* Servers only: 1 = gps_enabled is a real choice. Servers before
+	 * slice 10 ran the GPS whatever gps_enabled said, so a prefs file
+	 * without this marker is upgraded to gps_enabled = 1 once. */
+	uint8_t gps_enabled_set;
 	uint32_t gps_interval;          // in seconds
 	uint8_t advert_loc_policy;
 	uint32_t discovery_mod_timestamp;
@@ -141,8 +151,8 @@ struct NodePrefs {
 	uint8_t rx_duty_cycle;          // 1 = RX duty cycle, 0 = continuous RX
 	/* RESERVED — formerly apc_enabled / apc_margin (Adaptive Power Control,
 	 * removed in 1.16.6). These two bytes are still read and written at their
-	 * original offsets in all three prefs serializers (companion new_prefs 94/95,
-	 * repeater prefs 292/293, RepeaterDataStore) because every field after them
+	 * original offsets in both prefs layouts (companion new_prefs 94/95, server
+	 * prefs 292/293; helpers/PrefsCodec.cpp) because every field after them
 	 * is positional: dropping them would shift the rest of the layout and make
 	 * every already-deployed node misparse its saved prefs on upgrade.
 	 * Do not reuse for a new setting — an upgraded node still has the old APC
@@ -207,7 +217,7 @@ struct NodePrefs {
 	 * involves, but the offset itself is persisted and survives — so after a
 	 * table change a converged node quietly starts operating somewhere it
 	 * never measured.  Recording the base turns that into something the
-	 * firmware can correct at boot (see LoRaRadioBase::setCadParams), instead
+	 * firmware can correct at boot (see LoRaRadio::setCadParams), instead
 	 * of a "run set cad.reset after upgrading" line in the release notes that
 	 * most users will not read. */
 	uint8_t cad_base;
@@ -231,6 +241,10 @@ struct NodePrefs {
 	uint8_t wake_on_msg;            // 0 = don't wake display on message, 1 = wake (default)
 	uint16_t screen_off_secs;       // 0 = default (Kconfig), else 5–300
 	uint16_t auto_shutdown_mv;      // low-batt auto-shutdown threshold; 0 = off, else 2900–4200
+	/* 1 = auto_shutdown_mv is a choice made after the default moved from
+	 * 3300 to 3200 mV; a stored 3300 without it is the old default and
+	 * becomes 3200 once (PrefsJson, the legacy loader). */
+	uint8_t auto_shutdown_set;
 	uint8_t v_contact_enabled;      // v-contact (loopback admin chat via BLE/USB); 1 = on (default)
 	uint16_t v_battery_alert_mv;    // 0 = alert off; 0xFFFF = board default (auto_shutdown+200); else mV
 	/* App-owned ContactInfo.flags byte for the v-contact.  The v-contact never
@@ -239,9 +253,14 @@ struct NodePrefs {
 	 * upper bits are telemetry permissions.  Kept here so a toggle survives
 	 * reconnects and reboots instead of being echoed back as 0. */
 	uint8_t v_contact_flags;
+	/* The WiFi companion's network (upstream's wifi_ssid / wifi_pwd /
+	 * wifi_enabled). Stored by every companion build, WiFi or not, so moving
+	 * between firmware never drops a saved network. */
+	char wifi_ssid[33];
+	char wifi_pwd[64];
+	uint8_t wifi_enabled;           // 1 = join wifi_ssid when set (upstream default)
 };
 
-/* Default prefs -- must match LoRaConfig.h defaults for radio interop. */
 /* Range guards for prefs that came off flash.
  *
  * The atomic replace in every savePrefs() plus littlefs's own CRCs make a torn
@@ -252,7 +271,7 @@ struct NodePrefs {
  * fixed-size blocks with no terminator in the file format, so an unterminated
  * one runs every later %s off the end of the struct.
  *
- * Called at the end of each role's loadPrefs().  Fields whose whole range is
+ * Called by both prefs decoders (PrefsCodec.cpp).  Fields whose whole range is
  * legal (autoadd_config bitmask, discovery_mod_timestamp, the v_contact_*
  * sentinels) are deliberately left alone. */
 template <typename T>
@@ -276,12 +295,53 @@ static inline T saneBool(T v, T fallback) { return (v == 0 || v == 1) ? v : fall
  * behaviour the firmware had before the setting existed. */
 static inline uint8_t saneEnum(uint8_t v, uint8_t max) { return (v <= max) ? v : 0; }
 
+/* The GPS duty interval, in the one range every setter and the GPS manager
+ * share: 0 = always on, else 10 s to 1 week (safely below the ms overflow). */
+/* The auto-shutdown default before 2026-09-25 (now 3200 mV): a stored
+ * 3300 without auto_shutdown_set is migrated (auto_shutdown_upgrade). */
+#define AUTO_SHUTDOWN_OLD_DEFAULT_MV 3300
+static inline void auto_shutdown_upgrade(NodePrefs *p) {
+#if defined(CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS) && CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS > 0
+	if (!p->auto_shutdown_set && p->auto_shutdown_mv == AUTO_SHUTDOWN_OLD_DEFAULT_MV) {
+		p->auto_shutdown_mv = CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS;
+	}
+#endif
+	p->auto_shutdown_set = 1;
+}
+
+/* `powersaving` gates ESP32 light sleep (helpers/pm_esp32_wake.c).  On a
+ * light-sleep build the default is on: those builds slept unconditionally
+ * before the switch existed, and the stored 0 carried no intent.  Elsewhere
+ * it is upstream's default, off. */
+#if defined(CONFIG_PM) && defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32)
+#define POWERSAVING_DEFAULT 1
+#else
+#define POWERSAVING_DEFAULT 0
+#endif
+static inline void powersaving_upgrade(NodePrefs *p) {
+	if (!p->powersaving_set && p->powersaving_enabled == 0) {
+		p->powersaving_enabled = POWERSAVING_DEFAULT;
+	}
+	p->powersaving_set = 1;
+}
+
+#define GPS_INTERVAL_MIN_SEC 10u
+#define GPS_INTERVAL_MAX_SEC 604800u
+static inline uint32_t clampGpsInterval(uint32_t sec) {
+	if (sec == 0) return 0;
+	if (sec < GPS_INTERVAL_MIN_SEC) return GPS_INTERVAL_MIN_SEC;
+	return (sec > GPS_INTERVAL_MAX_SEC) ? GPS_INTERVAL_MAX_SEC : sec;
+}
+
 static inline void sanitizeNodePrefs(NodePrefs* p) {
 	p->node_name[sizeof(p->node_name) - 1] = '\0';
 	p->password[sizeof(p->password) - 1] = '\0';
 	p->guest_password[sizeof(p->guest_password) - 1] = '\0';
 	p->owner_info[sizeof(p->owner_info) - 1] = '\0';
 	p->default_scope_name[sizeof(p->default_scope_name) - 1] = '\0';
+	p->wifi_ssid[sizeof(p->wifi_ssid) - 1] = '\0';
+	p->wifi_pwd[sizeof(p->wifi_pwd) - 1] = '\0';
+	p->wifi_enabled = saneBool(p->wifi_enabled, (uint8_t)1);
 
 	p->airtime_factor = sanePrefFloat(p->airtime_factor, 0.0f, 9.0f, 9.0f);
 	p->rx_delay_base  = sanePrefFloat(p->rx_delay_base, 0.0f, 3600.0f, 0.0f);
@@ -312,6 +372,8 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	p->multi_acks          = saneBool<uint8_t>(p->multi_acks, 0);
 	p->buzzer_quiet        = saneBool<uint8_t>(p->buzzer_quiet, 0);
 	p->gps_enabled         = saneBool<uint8_t>(p->gps_enabled, 0);
+	p->gps_enabled_set     = saneBool<uint8_t>(p->gps_enabled_set, 0);
+	p->auto_shutdown_set   = saneBool<uint8_t>(p->auto_shutdown_set, 0);
 	p->rx_duty_cycle       = saneBool<uint8_t>(p->rx_duty_cycle, 0);
 	p->leds_disabled       = saneBool<uint8_t>(p->leds_disabled, 0);
 	p->leds_radio_mode     = saneEnum(p->leds_radio_mode, LEDS_RADIO_MAX);
@@ -322,7 +384,8 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	 * restoring the default — left over from when the default was dry-run. */
 	p->cad_auto            = saneBool<uint8_t>(p->cad_auto, 1);
 	p->allow_read_only     = saneBool<uint8_t>(p->allow_read_only, 0);
-	p->powersaving_enabled = saneBool<uint8_t>(p->powersaving_enabled, 0);
+	p->powersaving_enabled = saneBool<uint8_t>(p->powersaving_enabled, POWERSAVING_DEFAULT);
+	p->powersaving_set     = saneBool<uint8_t>(p->powersaving_set, 0);
 	p->display_rotate      = saneBool<uint8_t>(p->display_rotate, 0);
 	p->input_rotate        = saneBool<uint8_t>(p->input_rotate, 0);
 	/* Defaults that are on, not off. */
@@ -341,7 +404,11 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	if (p->advert_loc_policy   > ADVERT_LOC_PREFS)     p->advert_loc_policy   = ADVERT_LOC_NONE;
 
 	if (p->loop_detect    > LOOP_DETECT_STRICT) p->loop_detect    = LOOP_DETECT_MINIMAL;
-	if (p->path_hash_mode > 2)                  p->path_hash_mode = 0;
+	/* Fallback must be the initNodePrefs() default (1 = 2-byte hashes). It was
+	 * 0, so a corrupt byte silently dropped the node to 1-byte path hashes --
+	 * a value no role defaults to, and one the CLI would not report as the
+	 * default either. */
+	if (p->path_hash_mode > 2)                  p->path_hash_mode = 1;
 	p->autoadd_max_hops    = clampPref<uint8_t>(p->autoadd_max_hops, 0, 64);
 	p->flood_max           = clampPref<uint8_t>(p->flood_max, 0, 64);
 	p->flood_max_unscoped  = clampPref<uint8_t>(p->flood_max_unscoped, 0, 64);
@@ -357,8 +424,8 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	/* 6-digit BLE passkey — anything else is rejected at pairing time and
 	 * leaves no way back in over BLE. */
 	if (p->ble_pin > 999999) p->ble_pin = 0;
-	/* Seconds; 0 = off.  A year is already far past any sane setting. */
-	if (p->gps_interval > 31536000UL) p->gps_interval = 0;
+	/* 0 is always-on, so a corrupt value clamps to the week, not to 0. */
+	p->gps_interval = clampGpsInterval(p->gps_interval);
 	/* 0 = board/Kconfig default on both, else the range the UI offers. */
 	if (p->display_brightness != 0) p->display_brightness = clampPref<uint8_t>(p->display_brightness, 10, 100);
 	if (p->screen_off_secs != 0) p->screen_off_secs = clampPref<uint16_t>(p->screen_off_secs, 5, 300);
@@ -387,16 +454,12 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 #ifdef CONFIG_ZEPHCORE_GUEST_PASSWORD
 	strncpy(prefs->guest_password, CONFIG_ZEPHCORE_GUEST_PASSWORD, sizeof(prefs->guest_password) - 1);
 #endif
-	/* Radio params - MUST match LoRaConfig.h for interop with companion nodes */
-	prefs->freq = 869.618f;           // LoRaConfig::FREQ_HZ / 1000000.0
-	prefs->bw = 62.5f;                // LoRaConfig::BANDWIDTH
-	prefs->sf = 7;                    // LoRaConfig::SPREADING_FACTOR
-	prefs->cr = 5;                    // CR 4/5 (MeshCore uses 5-8 for CR 4/5 through 4/8)
-#ifdef CONFIG_ZEPHCORE_DEFAULT_TX_POWER_DBM
-	prefs->tx_power_dbm = CONFIG_ZEPHCORE_DEFAULT_TX_POWER_DBM;
-#else
-	prefs->tx_power_dbm = 22;         // LoRaConfig::TX_POWER_DBM
-#endif
+	/* Radio params */
+	prefs->freq = mesh::LoRaConfig::FREQ_MHZ;
+	prefs->bw = mesh::LoRaConfig::BANDWIDTH_KHZ;
+	prefs->sf = mesh::LoRaConfig::SPREADING_FACTOR;
+	prefs->cr = mesh::LoRaConfig::CODING_RATE;   /* 5-8 = CR 4/5 through 4/8 */
+	prefs->tx_power_dbm = mesh::LoRaConfig::TX_POWER_DBM;
 	prefs->disable_fwd = 0;
 	prefs->advert_interval = 0;       // 0 = periodic local advert off; else minutes = value * 2
 	prefs->flood_advert_interval = 47;  // hours
@@ -414,11 +477,22 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->flood_max = 64;            // max hops for flood packets (0 = blocking all!)
 	prefs->flood_max_unscoped = 64;  // un-scoped flood hop limit (defaults to flood_max)
 	prefs->flood_max_advert = 8;     // ADVERT flood hop limit (upstream default)
+	/* 2-byte path hashes (mode + 1 = hash size) for everything this node
+	 * originates.  ZephCore's default, not upstream's -- Arduino MeshCore
+	 * ships 0 (1-byte) for every role, which collides far more often on a
+	 * dense mesh.  It lived only in the RepeaterMesh and RoomServerMesh
+	 * constructors until now, so a fresh companion quietly originated 1-byte
+	 * floods and reported mode 0 to the app, and `set path.hash.mode default`
+	 * wrote 0 even on a repeater that had booted at 1.  Deployed nodes keep
+	 * whatever they stored: path_hash_mode sits at a fixed prefs offset that
+	 * always loads, so this only changes a factory-fresh node. */
+	prefs->path_hash_mode = 1;       // 2-byte path hashes
 	prefs->interference_threshold = 0;
 	prefs->leds_disabled = 0;         // LEDs on
 	prefs->leds_radio_mode = LEDS_RADIO_TX;  // activity LED on transmit, as before
 	prefs->leds_hb_mode = LEDS_HB_ALL;       // heartbeat + unread, as before
-	prefs->powersaving_enabled = 0;
+	prefs->powersaving_enabled = POWERSAVING_DEFAULT;
+	prefs->powersaving_set = 1;
 	prefs->gps_enabled = 0;
 	prefs->gps_interval = 300;        // 5 minutes
 	prefs->advert_loc_policy = ADVERT_LOC_NONE;
@@ -440,16 +514,18 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->input_rotate = 0;          // Default OFF — joystick axes as the board wires them
 	prefs->v_contact_enabled = 1;     // Default ON — v-contact loopback admin chat (companion)
 	prefs->v_battery_alert_mv = 0xFFFF; // Sentinel: derive from board auto-shutdown threshold
+	prefs->wifi_enabled = 1;          // as upstream: WiFi still stays off until an SSID is set
 	/* Companion-only feature, and main_companion.cpp used to assign this by
 	 * hand right after calling us — so no node ever ran without it.  It lives
 	 * here now because a default listed only at one call site is invisible to
 	 * every other caller of initNodePrefs(), which is the exact drift that
 	 * zeroed probe_interval and cad_auto in the past.  Matches what
-	 * loadPrefs()'s absent-field fallback and sanitizeNodePrefs() already use.
+	 * sanitizeNodePrefs() already uses.
 	 * 0 means disabled and is a legal stored value, so sanitize passes it
 	 * through untouched — this default only applies to a fresh prefs struct. */
 #ifdef CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS
 	prefs->auto_shutdown_mv = CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS;
+	prefs->auto_shutdown_set = 1;
 #else
 	prefs->auto_shutdown_mv = 0;
 #endif

@@ -120,7 +120,7 @@ static bool rtc_time_unreliable(const struct rtc_desc *d, const uint8_t blk[7])
  * chip holds a sane time, return it via epoch_out. */
 static bool rtc_probe(uint32_t *epoch_out)
 {
-	/* Clear last run's outcomes. rtc_probe() can run more than once -- 
+	/* Clear last run's outcomes. rtc_probe() can run more than once --
 	 * zephcore_rtc_save() probes if restore never ran -- and it returns
 	 * early once a chip holds a valid time. Without this reset, candidates
 	 * the later run never reached would keep the previous run's PRESENT or

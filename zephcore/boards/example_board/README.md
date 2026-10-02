@@ -198,9 +198,11 @@ STM32WL caveats — different from every other ZephCore platform:
   `CONFIG_BT=n`. The console/CLI and the companion protocol both run over
   **USART1**, bridged to USB-C by the onboard USB-UART chip.
 - **Repeater** uses the USART CLI (add `repeater.conf`). The **companion** speaks
-  MeshCore serial framing over the same UART via `SerialCompanionTransport.c`
-  (a drop-in `zephcore_ble_*` provider, auto-selected because `CONFIG_BT=n`) —
-  no BLE pairing, the official serial client connects directly.
+  MeshCore serial framing over the same UART through the wired companion
+  transport (`ZephyrCompanionUSB.cpp`, UART backend: the board's
+  `zephcore,companion-uart` chosen node selects `CONFIG_ZEPHCORE_COMPANION_SERIAL`
+  when there is no Bluetooth) — no BLE pairing, the official serial client
+  connects directly, and a terminal gets the text CLI.
 - **RAM-bound, not flash-bound:** 64KB SRAM. The companion's contact/queue
   arrays are capped hard in `board.conf` (`MAX_CONTACTS=24`, `OFFLINE_QUEUE_SIZE=8`).
   AES tables live in ROM (`MBEDTLS_AES_ROM_TABLES`) to reclaim ~8KB SRAM.
@@ -276,8 +278,11 @@ Steps:
   2. Copy board.conf and board.overlay from THIS directory
   3. Uncomment the sections matching your platform
   4. Fill in YOUR pin numbers and partition layout
-  5. Add board detection to CMakeLists.txt (platform detection block, ~line 270):
-     Add `BOARD MATCHES "your_board"` to the correct platform line
+  5. Add a zephcore.yml manifest (copy one from a similar board; schema in
+     zephcore/scripts/board_manifest.py). No CMake edit is needed: the
+     boards/<platform>/ directory the board lives in selects its platform.
+     Leave out `release:` until the board is validated on hardware, then run
+     `python zephcore/scripts/board_manifest.py check`.
   6. Build and iterate!
 
 

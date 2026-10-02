@@ -55,18 +55,12 @@
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <string.h>
 
-#ifdef CONFIG_POWEROFF
-#include <zephyr/sys/poweroff.h>
-#endif
-
-#if defined(CONFIG_SOC_FAMILY_NORDIC_NRF)
-#include <hal/nrf_gpio.h>
-#endif
+#include <zephyr_poweroff.h>
 
 #include <zephyr/sys/reboot.h>
 
-/* GPS control (extern "C" in ZephyrSensorManager.h) */
-#include <ZephyrSensorManager.h>
+/* GPS control */
+#include <ZephyrGPSManager.h>
 
 /* Mesh action wrappers (deferred to mesh event loop thread) */
 #include "ui_mesh_actions.h"
@@ -209,6 +203,7 @@ static void splash_work_handler(struct k_work *work)
 
 static void schedule_render(void);
 static void schedule_render_auto(void);
+static void set_ble_connected(bool connected);
 
 static void advert_defer_handler(struct k_work *work)
 {
@@ -535,14 +530,10 @@ static void action_deep_sleep(void)
 	}
 #endif
 
-	/* Shared peripheral teardown + SENSE config for sw0 wake.
-	 * Single source of truth in helpers/ui/ui_common.c so the joystick
-	 * UI variant ends up in the same low-power state. */
-	ui_prepare_for_system_off();
-
-	LOG_INF("deep sleep: entering System OFF");
-	sys_poweroff();
-	CODE_UNREACHABLE;
+	/* The one power-off path (adapters/board/zephyr_poweroff.c), shared
+	 * with the joystick UI and the CLI. */
+	zephcore_shutdown_reason_save(ZC_SHUTDOWN_USER);
+	zephcore_power_off();
 #else
 	LOG_WRN("deep sleep: CONFIG_POWEROFF not enabled");
 #endif
@@ -904,11 +895,11 @@ void ui_notify(enum ui_event event)
 		break;
 
 	case UI_EVENT_BLE_CONNECTED:
-		ui_set_ble_status(true, NULL);
+		set_ble_connected(true);
 		break;
 
 	case UI_EVENT_BLE_DISCONNECTED:
-		ui_set_ble_status(false, NULL);
+		set_ble_connected(false);
 		break;
 
 	default:
@@ -964,15 +955,11 @@ void ui_set_msg_count(uint16_t count)
 #endif
 }
 
-void ui_set_ble_status(bool connected, const char *name)
+static void set_ble_connected(bool connected)
 {
 	struct ui_state *s = get_state();
 
 	s->ble_connected = connected;
-	if (name) {
-		strncpy(s->device_name, name, sizeof(s->device_name) - 1);
-		s->device_name[sizeof(s->device_name) - 1] = '\0';
-	}
 
 	if (ui_initialized) {
 		schedule_render();
@@ -1151,17 +1138,6 @@ void ui_set_node_name(const char *name)
 #ifdef CONFIG_ZEPHCORE_UI_DISPLAY
 	ui_pages_set_node_name(name);
 #endif
-}
-
-void ui_set_sensor_data(int16_t temp_c10, uint32_t pressure_pa,
-			uint16_t humidity_rh10, uint16_t light_lux)
-{
-	struct ui_state *s = get_state();
-
-	s->temperature_c10 = temp_c10;
-	s->pressure_pa = pressure_pa;
-	s->humidity_rh10 = humidity_rh10;
-	s->light_lux = light_lux;
 }
 
 void ui_set_gps_available(bool available)
