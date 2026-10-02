@@ -5,7 +5,7 @@ This is the cumulative diff of the upstream-bound commits on the fork
 ptr727/zephyrproject-rtos-zephyr: integration PR #1 (work/dm9051-fixes, the
 generic DM9051 fixes) and PR #2 (work/ch390-support, the CH390 support). One
 section per upstream commit follows, carrying its rationale. The CH390
-devicetree binding (fork commit 21384ecb14b5) is not part of this diff: it is
+devicetree binding (fork commit 29fd9f8d5630) is not part of this diff: it is
 a new file, so it lives in patches/zephyr-new/dts/bindings/ethernet/ instead.
 When these land upstream, drop the matching sections and regenerate.
 
@@ -84,7 +84,23 @@ caused a new DHCP lease. The read pointer had
 advanced by exactly the previous frame plus its header, so the length
 was genuine. Not tested on a DM9051.
 
-== drivers: ethernet: dm9051: add WCH CH390 support (fork c1615ce332d4) ==
+== drivers: ethernet: dm9051: keep draining RX after an oversized frame (fork 0b96f2634ac7) ==
+
+Dropping a frame larger than the RX buffer ended the RX drain. ISR has
+already been written back at that point, so the frames queued behind
+the dropped one stayed in RX SRAM until an unrelated frame raised a
+new receive interrupt; on a quiet link that can take arbitrarily long.
+
+The read pointer is correct after the drop, so continue the drain
+instead. eth_dm9051_recv_pkt() now returns an error code and the packet
+through an output argument, and -EMSGSIZE marks a dropped frame, which
+is counted as an RX error. The other failure paths still end the
+drain.
+
+Built for native_sim and native_sim/native/64 with the build_all
+ethernet SPI test.
+
+== drivers: ethernet: dm9051: add WCH CH390 support (fork ea72aed8533e) ==
 
 The WCH CH390 has the register map of the DM9051 but reports product ID
 0x9151, so eth_dm9051_check_id() rejects it. Carry the expected product
@@ -115,9 +131,11 @@ writes differs.
   outage and a new DHCP lease. Skip such a frame by its length instead
   and keep draining. The controller is still restarted when the length
   is out of range, when the header's ready byte is not 0x01, or when
-  the skip fails. For that, eth_dm9051_recv_pkt() now returns an errno
-  so the caller can tell a skipped frame (-EBADMSG), after which the
-  drain continues, from one that ends the drain:
+  the skip fails. eth_dm9051_recv_pkt() reports a skipped frame as
+  -EBADMSG, and the drain continues after it as it does after a dropped
+  oversized frame. pkt is initialized in the drain loop because GCC
+  cannot prove it set once two codes continue the drain
+  (-Werror=maybe-uninitialized on native_sim):
   https://github.com/espressif/esp-eth-drivers/blob/6c6e77f97ed4c56142140ee14e9ef7f3a4451b7b/ch390/src/esp_eth_mac_ch390.c#L812-L815
 
 Tested on an Elecrow ThinkNode M7 (ESP32-S3 with a CH390), adding one
@@ -159,7 +177,7 @@ index b3f13fab327..7063712937b 100644
  config ETH_DM9051_RX_THREAD_STACK_SIZE
  	int "Stack size for internal incoming packet handler"
 diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
-index a8406e69fae..018bc97c9d8 100644
+index a8406e69fae..cbbd6911ea3 100644
 --- a/drivers/ethernet/eth_dm9051.c
 +++ b/drivers/ethernet/eth_dm9051.c
 @@ -33,9 +33,15 @@ LOG_MODULE_REGISTER(eth_dm9051, CONFIG_ETHERNET_LOG_LEVEL);
@@ -307,9 +325,9 @@ index a8406e69fae..018bc97c9d8 100644
  
 -static struct net_pkt *eth_dm9051_recv_pkt(const struct device *dev)
 +/*
-+ * Read one frame from RX SRAM. Returns 0 with *out set, -EBADMSG when the frame
-+ * was dropped and the next one can still be read, or another negative errno to
-+ * end this drain of RX SRAM.
++ * Read one frame from RX SRAM. Returns 0 with *out set, -EBADMSG or -EMSGSIZE when
++ * the frame was dropped and the next one can still be read, or another negative
++ * errno to end this drain of RX SRAM.
 + */
 +static int eth_dm9051_recv_pkt(const struct device *dev, struct net_pkt **out)
  {
@@ -389,7 +407,7 @@ index a8406e69fae..018bc97c9d8 100644
  	}
  
  	/* Read RX data from RX SRAM */
-@@ -552,11 +642,21 @@ static struct net_pkt *eth_dm9051_recv_pkt(const struct device *dev)
+@@ -552,17 +642,27 @@ static struct net_pkt *eth_dm9051_recv_pkt(const struct device *dev)
  		goto out_net_pkt_unref;
  	}
  
@@ -413,6 +431,13 @@ index a8406e69fae..018bc97c9d8 100644
  }
  
  static int eth_dm9051_rx(const struct device *dev)
+ {
+ 	struct eth_dm9051_data *data = dev->data;
+-	struct net_pkt *pkt;
++	struct net_pkt *pkt = NULL;
+ 	uint16_t flag;
+ 	int ret;
+ 
 @@ -582,9 +682,13 @@ static int eth_dm9051_rx(const struct device *dev)
  		}
  
@@ -421,7 +446,7 @@ index a8406e69fae..018bc97c9d8 100644
 -		if (!pkt) {
 -			ret = -EIO;
 +		ret = eth_dm9051_recv_pkt(dev, &pkt);
-+		if (ret == -EBADMSG) {
++		if ((ret == -EBADMSG) || (ret == -EMSGSIZE)) {
 +			/* Frame dropped, keep draining the frames behind it */
 +			eth_stats_update_errors_rx(data->iface);
 +			continue;

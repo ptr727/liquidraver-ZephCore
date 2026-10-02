@@ -274,11 +274,12 @@ Measured under a 5 packet per second ping, ten minutes each:
 
 End to end afterwards: 600 pings, 0% loss, 1.44 ms average, 2.17 ms worst.
 
-A frame skipped for a status error is counted as an RX error and logged only at
-debug level. An oversized frame is counted the same way but logged at error
-level, as `RX failed (err -122)` (-EMSGSIZE in picolibc), and it ends that pass
-over the receive buffer, so any frames queued behind it wait for the next
-receive interrupt.
+A frame skipped for a status error or dropped as oversized is counted as an RX
+error and logged only at debug level, and reception carries on with the frames
+queued behind it. Injected from a host on the same switch, ten frames each of
+1519, 1522 and 1536 bytes were all dropped with no restart and no link event,
+and the ping sent behind each one was answered. A 1540-byte frame, beyond the
+1536-byte limit, still restarts the controller.
 
 ## Not ported
 
