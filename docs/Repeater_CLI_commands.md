@@ -105,9 +105,15 @@ Every field is something the firmware *knows*. It never infers:
   an RTC fitted but not declared is invisible to the firmware, and the reply says exactly that.
   A board that declares candidates in a build with RTC autodiscovery disabled reports
   `rtc: N declared, autodiscovery disabled`.
-- An RTC candidate the boot probe never reached, or whose read failed for a reason other than
-  no reply (a timeout, a busy bus), reports `unprobed`, not `absent`. The probe
-  stops at the first chip holding a valid time.
+- An RTC candidate the boot probe never reached, or whose read failed with a timeout or a busy
+  bus, reports `unprobed`, not `absent`. The probe stops at the first chip holding a valid
+  time.
+- `absent` means the read ended in `-EIO`, which is how every driver here reports an address
+  NACK, or that something answered but did not behave like an RTC. The nRF drivers also
+  report any other failed transfer as `-EIO`, so on nRF a bus error during the probe reads as
+  `absent` too; the driver gives nothing finer. `present` means the probe accepted the chip as
+  an RTC, which includes a chip whose time is not valid BCD when its power-loss flag is set or
+  cannot be read, since that chip is then adopted for write-back.
 - A build with no sensor support reports `not compiled in`, which is a different statement
   from a sensor manager that looked and found nothing.
 
