@@ -36,6 +36,15 @@ extern "C" {
 #define HW_HAS_GPS_HDR 1
 #endif
 
+/* The GNSS node and its UART both okay: the GPS manager's own condition
+ * (HAS_GPS_UART, adapters/gps/gps_internal.h). */
+#if DT_NODE_EXISTS(DT_NODELABEL(gnss))
+#define HW_GNSS_OKAY (DT_NODE_HAS_STATUS(DT_NODELABEL(gnss), okay) && \
+		      DT_NODE_HAS_STATUS(DT_BUS(DT_NODELABEL(gnss)), okay))
+#else
+#define HW_GNSS_OKAY 0
+#endif
+
 namespace zephcore_hw {
 namespace {
 
@@ -555,7 +564,12 @@ void section_i2c_scan(Sink *s)
 
 void section_gps(Sink *s, CommonCLICallbacks *cb)
 {
-#if DT_NODE_EXISTS(DT_NODELABEL(gnss))
+#if DT_NODE_EXISTS(DT_NODELABEL(gnss)) && !HW_GNSS_OKAY
+	/* The GPS manager needs the node and its UART both okay
+	 * (HAS_GPS_UART in gps_internal.h); a disabled one is declared, not used. */
+	sink_line(s, "gnss: %s declared but disabled in devicetree",
+		  DT_PROP_BY_IDX(DT_NODELABEL(gnss), compatible, 0));
+#elif DT_NODE_EXISTS(DT_NODELABEL(gnss))
 	sink_line(s, "gnss: %s", DT_PROP_BY_IDX(DT_NODELABEL(gnss), compatible, 0));
 	sink_line(s, "  on %s", DT_NODE_FULL_NAME(DT_PARENT(DT_NODELABEL(gnss))));
 #if DT_NODE_HAS_PROP(DT_PARENT(DT_NODELABEL(gnss)), current_speed)
@@ -659,7 +673,9 @@ void section_summary(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 		}
 	}
 
-#if DT_NODE_EXISTS(DT_NODELABEL(gnss))
+#if DT_NODE_EXISTS(DT_NODELABEL(gnss)) && !HW_GNSS_OKAY
+	sink_line(s, "gnss %s disabled", DT_PROP_BY_IDX(DT_NODELABEL(gnss), compatible, 0));
+#elif DT_NODE_EXISTS(DT_NODELABEL(gnss))
 	sink_line(s, "gnss %s", DT_PROP_BY_IDX(DT_NODELABEL(gnss), compatible, 0));
 #else
 	sink_line(s, "gnss none");
