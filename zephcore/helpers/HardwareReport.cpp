@@ -270,6 +270,22 @@ const char *declared_name_at(const char *bus, uint16_t addr)
 }
 #endif /* CONFIG_I2C */
 
+/* Candidates the probe could not settle either way: a "none present" is only
+ * true when this is zero. */
+unsigned rtc_unprobed_count(void)
+{
+	unsigned n = 0;
+
+	for (size_t i = 0; i < zephcore_rtc_declared(); i++) {
+		struct zephcore_rtc_entry e;
+
+		if (zephcore_rtc_get(i, &e) && e.state == ZEPHCORE_RTC_UNPROBED) {
+			n++;
+		}
+	}
+	return n;
+}
+
 const char *rtc_state_str(enum zephcore_rtc_state st)
 {
 	switch (st) {
@@ -362,6 +378,9 @@ void section_rtc(Sink *s, mesh::RTCClock *rtc)
 	if (zephcore_rtc_active(&active)) {
 		sink_line(s, "rtc: %s at 0x%02x on %s", active.name,
 			  active.addr, active.bus);
+	} else if (rtc_unprobed_count() > 0) {
+		sink_line(s, "rtc: none found, %u of %u declared unprobed",
+			  rtc_unprobed_count(), (unsigned)declared);
 	} else {
 		sink_line(s, "rtc: none present (%u declared)", (unsigned)declared);
 	}
@@ -609,7 +628,11 @@ void section_summary(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 		 * about it than the section it summarises. */
 		sink_line(s, "rtc not yet probed");
 	} else {
-		sink_line(s, "rtc none present");
+		if (rtc_unprobed_count() > 0) {
+			sink_line(s, "rtc none found, %u unprobed", rtc_unprobed_count());
+		} else {
+			sink_line(s, "rtc none present");
+		}
 	}
 
 #if DT_NODE_EXISTS(DT_NODELABEL(gnss))

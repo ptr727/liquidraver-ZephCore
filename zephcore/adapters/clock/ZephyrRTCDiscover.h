@@ -56,7 +56,8 @@ void zephcore_rtc_save(uint32_t epoch);
 
 enum zephcore_rtc_state {
 	ZEPHCORE_RTC_UNPROBED = 0, /* not probed: discovery stopped before
-				    * reaching it, or its bus was not ready */
+				    * reaching it, its bus was not ready, or
+				    * the read failed other than with -EIO */
 	ZEPHCORE_RTC_ABSENT,       /* no ACK, or a non-RTC chip sharing the address */
 	ZEPHCORE_RTC_PRESENT,      /* an RTC answered and was accepted as one */
 };
