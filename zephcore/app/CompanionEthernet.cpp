@@ -130,7 +130,10 @@ static void set_stable_mac(struct net_if *iface)
 		LOG_WRN("MAC set failed (%d) — a DHCP reservation may not hold", rc);
 	}
 
-	if (was_up) {
+	/* Not only when was_up: a controller that powered up with an invalid
+	 * address failed the boot-time net_if_up(), and only this one can
+	 * recover it. */
+	if (!net_if_is_admin_up(iface)) {
 		rc = net_if_up(iface);
 		if (rc < 0) {
 			/* ethernet_enable() refuses a link address it considers

@@ -497,6 +497,7 @@ config ZEPHCORE_COMPANION_ETHERNET
 config ZEPHCORE_COMPANION_ETHERNET_STABLE_MAC
 	bool "Derive the MAC address from the SoC device ID"
 	depends on ZEPHCORE_COMPANION_ETHERNET
+	depends on SOC_FAMILY_ESPRESSIF_ESP32
 	select HWINFO
 	select NET_L2_ETHERNET_MGMT
 	default y
@@ -506,8 +507,10 @@ config ZEPHCORE_COMPANION_ETHERNET_STABLE_MAC
 	  address is not stable across a power cycle, so a DHCP reservation
 	  stops matching and the node moves.
 
-	  On ESP32 the device ID is the factory efuse base MAC, and the
-	  Ethernet address is derived from it the way ESP-IDF derives its own.
+	  ESP32 only. There the device ID is the factory efuse base MAC, and
+	  the Ethernet address is derived from it the way ESP-IDF derives its
+	  own. On other SoCs the device ID is a serial number, which would
+	  make an arbitrary and possibly colliding address.
 
 endmenu # Companion TCP Transport
 

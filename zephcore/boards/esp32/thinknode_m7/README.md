@@ -259,11 +259,14 @@ renegotiation and a new DHCP cycle. On the CH390 such a frame is now skipped by
 its length and reception continues.
 
 The same restart also fired for a legal frame of 1519 to 1522 bytes, such as a
-full-size VLAN-tagged one: the chip delivers frames up to 1522 bytes, while the
-driver's buffer holds 1518 without VLAN support, so the length check took the
-frame for a corrupt header. A frame up to 1536 bytes that is larger than the
-buffer is now dropped by its length; the restart is kept for a length no frame
-can have, where the read pointer cannot be trusted.
+full-size VLAN-tagged one: the chip delivers frames longer than 1518 bytes
+(1540 was seen), while the driver's buffer holds 1518 without VLAN support, so
+the length check took the frame for a corrupt header. A frame up to 1536 bytes,
+the limit Linux's driver also uses, that is larger than the buffer is now
+dropped by its length. Above 1536 the read pointer is not trusted and the
+controller is still restarted, so a frame of that size from a neighbour, which
+only a LAN carrying jumbo frames sends, still costs a link outage and a new
+DHCP lease.
 
 Measured under a 5 packet per second ping, ten minutes each:
 
@@ -274,9 +277,10 @@ Measured under a 5 packet per second ping, ten minutes each:
 
 End to end afterwards: 600 pings, 0% loss, 1.44 ms average, 2.17 ms worst.
 
-A frame skipped for a status error or dropped as oversized is counted as an RX
-error and logged only at debug level, and reception carries on with the frames
-queued behind it. Injected from a host on the same switch, ten frames each of
+A frame skipped for a status error or dropped as oversized leaves no trace on
+this board: the driver counts it as an RX error and logs it at debug level, but
+the build includes neither network statistics nor debug-level driver logging.
+Reception carries on with the frames queued behind it. Injected from a host on the same switch, ten frames each of
 1519, 1522 and 1536 bytes were all dropped with no restart and no link event,
 and the ping sent behind each one was answered. A 1540-byte frame, beyond the
 1536-byte limit, still restarts the controller.
