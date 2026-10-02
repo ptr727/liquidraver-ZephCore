@@ -207,7 +207,7 @@ struct I2cDecl {
  * DT_NODE_FULL_NAME(node)), and the live scan and the RTC section both report
  * `dev->name`. A bus node carrying a `label` would therefore print one string
  * in `hw i2c` and a different one in `hw i2c scan` and `hw rtc`, and
- * declared_name_at() -- which matches the two by string -- would silently stop
+ * declared_names_at() -- which matches the two by string -- would silently stop
  * annotating scanned addresses.
  *
  * No board in this tree labels an I2C node today, so the two derivations agree
@@ -280,16 +280,29 @@ constexpr size_t i2c_bus_ref_count() { return ARRAY_SIZE(i2c_bus_refs) - 1; }
 #endif /* CONFIG_I2C */
 
 #if IS_ENABLED(CONFIG_I2C)
-/* Name a scanned address from the devicetree, when the board declared it. */
-const char *declared_name_at(const char *bus, uint16_t addr)
+/* Name a scanned address from the devicetree, when the board declared it.
+ * Every declaration at that address is listed, '|'-separated: the scan cannot
+ * tell which of two parts sharing an address (BME280 and BMP388 at 0x77) is
+ * the one that answered. Returns false when nothing is declared there. */
+bool declared_names_at(const char *bus, uint16_t addr, char *out, size_t cap)
 {
+	size_t used = 0;
+
+	out[0] = '\0';
 	for (size_t i = 0; i < i2c_decl_count(); i++) {
-		if (i2c_decls[i].addr == addr &&
-		    strcmp(i2c_decls[i].bus, bus) == 0) {
-			return i2c_decls[i].compat;
+		if (i2c_decls[i].addr != addr || strcmp(i2c_decls[i].bus, bus) != 0) {
+			continue;
 		}
+		int w = snprintf(out + used, cap - used, "%s%s", used ? "|" : "",
+				 i2c_decls[i].compat);
+		if (w < 0 || (size_t)w >= cap - used) {
+			/* Too long to name: the caller keeps the address alone. */
+			out[0] = '\0';
+			return false;
+		}
+		used += (size_t)w;
 	}
-	return nullptr;
+	return used > 0;
 }
 #endif /* CONFIG_I2C */
 
@@ -507,7 +520,8 @@ void section_i2c_scan(Sink *s)
 			}
 			found++;
 
-			const char *nm = declared_name_at(bus->name, addr);
+			char nm[64];
+			bool named = declared_names_at(bus->name, addr, nm, sizeof(nm));
 
 			/* Render the token on its own first, so the decision to
 			 * wrap is made against a known length and an address can
@@ -517,8 +531,8 @@ void section_i2c_scan(Sink *s)
 			 * address while found++ had already counted it, so the
 			 * total and the listing disagreed. */
 			char tok[72];
-			int tw = nm ? snprintf(tok, sizeof(tok), " 0x%02x(%s)", addr, nm)
-				    : snprintf(tok, sizeof(tok), " 0x%02x", addr);
+			int tw = named ? snprintf(tok, sizeof(tok), " 0x%02x(%s)", addr, nm)
+				       : snprintf(tok, sizeof(tok), " 0x%02x", addr);
 
 			if (tw < 0 || (size_t)tw >= sizeof(tok)) {
 				/* Annotation too long for the token buffer. The
