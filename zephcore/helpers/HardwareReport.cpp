@@ -321,6 +321,13 @@ void section_rtc(Sink *s, mesh::RTCClock *rtc)
 {
 	(void)rtc;
 
+	if (!IS_ENABLED(CONFIG_ZEPHCORE_RTC_AUTODISCOVER)) {
+		/* The discovery stubs report nothing declared, which would
+		 * contradict `hw i2c` listing the descriptors. */
+		sink_line(s, "rtc: autodiscovery disabled");
+		return;
+	}
+
 	size_t declared = zephcore_rtc_declared();
 
 	if (declared == 0) {
@@ -524,7 +531,7 @@ void section_gps(Sink *s, CommonCLICallbacks *cb)
 
 void section_sensors(Sink *s)
 {
-#ifdef HW_HAS_SENSOR_HDR
+#if defined(HW_HAS_SENSOR_HDR) && IS_ENABLED(CONFIG_SENSOR)
 	/* One line per part the boot probe found, environment and power
 	 * monitors alike, with the fields its last reading carried. */
 	int n = env_sensor_count();
@@ -576,6 +583,8 @@ void section_summary(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 		 * address is not appended here -- doing so rendered
 		 * "rtc-rv3028@52@0x52" on real hardware. */
 		sink_line(s, "rtc %s", active.name);
+	} else if (!IS_ENABLED(CONFIG_ZEPHCORE_RTC_AUTODISCOVER)) {
+		sink_line(s, "rtc autodiscovery disabled");
 	} else if (zephcore_rtc_declared() == 0) {
 		sink_line(s, "rtc none declared");
 	} else if (!zephcore_rtc_probed()) {
@@ -689,8 +698,9 @@ void handle(const char *command, char *reply, size_t cap, bool local,
 
 	/* Each arm must match a whole word AND carry a valid tail; a branch that
 	 * matches the word but not the tail falls through to the usage string. */
-	if (*arg == '\0') {
-		sink_init(&s, reply, cap, 0);
+	if (*arg == '\0' || ((*arg >= '0' && *arg <= '9') && parse_tail(arg, &start))) {
+		/* "hw N" resumes the summary, which pages like any section. */
+		sink_init(&s, reply, cap, start);
 		section_summary(&s, board, callbacks);
 	} else if ((rest = match_word(arg, "board")) && parse_tail(rest, &start)) {
 		sink_init(&s, reply, cap, start);
