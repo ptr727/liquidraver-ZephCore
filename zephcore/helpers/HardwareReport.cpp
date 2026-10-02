@@ -15,7 +15,7 @@
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/version.h>
 
-#include <mesh/Board.h>
+#include <mesh/MeshCore.h>
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -245,6 +245,7 @@ const struct device *const i2c_bus_refs[] = {
 constexpr size_t i2c_bus_ref_count() { return ARRAY_SIZE(i2c_bus_refs) - 1; }
 #endif /* CONFIG_I2C */
 
+#if IS_ENABLED(CONFIG_I2C)
 /* Name a scanned address from the devicetree, when the board declared it. */
 const char *declared_name_at(const char *bus, uint16_t addr)
 {
@@ -256,6 +257,7 @@ const char *declared_name_at(const char *bus, uint16_t addr)
 	}
 	return nullptr;
 }
+#endif /* CONFIG_I2C */
 
 const char *rtc_state_str(enum zephcore_rtc_state st)
 {
@@ -407,6 +409,7 @@ void section_i2c_scan(Sink *s)
 			sink_line(s, "%s: name too long to scan", bus->name);
 			continue;
 		}
+		const int header = used;
 
 		/* 0x08-0x77: the 7-bit range excluding the reserved low and
 		 * high blocks. A zero-length write is the standard probe -- it
@@ -449,12 +452,12 @@ void section_i2c_scan(Sink *s)
 			size_t toklen = (size_t)tw;
 
 			if ((size_t)used + toklen >= sizeof(line)) {
-				/* Wrap: flush what we have and restart the line. */
-				line[used] = '\0';
-				sink_line(s, "%s", line);
-				used = snprintf(line, sizeof(line), "%s:", bus->name);
-				if (used < 0 || (size_t)used >= sizeof(line)) {
-					break;
+				/* Wrap: flush what we have and restart the line,
+				 * unless it holds only the bus name. */
+				if (used > header) {
+					sink_line(s, "%s", line);
+					used = header;
+					line[used] = '\0';
 				}
 			}
 
@@ -473,7 +476,7 @@ void section_i2c_scan(Sink *s)
 
 		if (found == 0) {
 			sink_line(s, "%s: none found", bus->name);
-		} else {
+		} else if (used > header) {
 			sink_line(s, "%s", line);
 		}
 	}
@@ -515,10 +518,6 @@ void section_gps(Sink *s, CommonCLICallbacks *cb)
 #ifdef HW_HAS_GPS_HDR
 	sink_line(s, "  available: %s", gps_is_available() ? "yes" : "no");
 	sink_line(s, "  enabled: %s", gps_is_enabled() ? "yes" : "no");
-#else
-	if (cb != nullptr) {
-		sink_line(s, "  enabled: %s", cb->isGpsEnabled() ? "yes" : "no");
-	}
 #endif
 	(void)cb;
 }
@@ -526,22 +525,33 @@ void section_gps(Sink *s, CommonCLICallbacks *cb)
 void section_sensors(Sink *s)
 {
 #ifdef HW_HAS_SENSOR_HDR
-	bool env = env_sensors_available();
-	bool pwr = power_sensors_available();
+	/* One line per part the boot probe found, environment and power
+	 * monitors alike, with the fields its last reading carried. */
+	int n = env_sensor_count();
 
-	sink_line(s, "sensors: env %s, power %s",
-		  env ? "yes" : "no", pwr ? "yes" : "no");
+	if (n <= 0) {
+		sink_line(s, "sensors: none found");
+		return;
+	}
+	sink_line(s, "sensors: %d found", n);
 
-	if (env) {
-		struct env_data d;
-		if (env_sensors_read(&d) == 0) {
-			sink_line(s, "  channels:%s%s%s%s%s",
-				  d.has_temperature ? " temp" : "",
-				  d.has_humidity ? " hum" : "",
-				  d.has_pressure ? " press" : "",
-				  d.has_mcu_temperature ? " mcutemp" : "",
-				  d.has_luminosity ? " lux" : "");
+	for (int i = 0; i < n; i++) {
+		struct env_sensor_reading r;
+
+		if (env_sensor_read(i, &r) != 0) {
+			sink_line(s, "  %d: read failed", i);
+			continue;
 		}
+		sink_line(s, "  %d:%s%s%s%s%s%s%s%s%s", i,
+			  (r.fields & ENV_F_TEMPERATURE) ? " temp" : "",
+			  (r.fields & ENV_F_HUMIDITY) ? " hum" : "",
+			  (r.fields & ENV_F_PRESSURE) ? " press" : "",
+			  (r.fields & ENV_F_ALTITUDE) ? " alt" : "",
+			  (r.fields & ENV_F_LUMINOSITY) ? " light" : "",
+			  (r.fields & ENV_F_VOLTAGE) ? " volt" : "",
+			  (r.fields & ENV_F_CURRENT) ? " curr" : "",
+			  (r.fields & ENV_F_POWER) ? " power" : "",
+			  env_sensor_is_board_local(i) ? " (board)" : "");
 	}
 #else
 	/* No sensor support compiled in -- which is a different statement from
