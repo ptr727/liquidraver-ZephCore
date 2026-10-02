@@ -157,6 +157,12 @@ void sink_line(Sink *s, const char *fmt, ...)
 /* Append the resume marker if the page was cut short. */
 void sink_finish(Sink *s)
 {
+	if (s->len == 0 && !s->full) {
+		/* A start past the last line: an empty reply reads as an unknown
+		 * command on a companion. */
+		snprintf(s->buf, s->buf_cap, "no line %u, the report has %u", s->first, s->line);
+		return;
+	}
 	if (!s->full) {
 		return;
 	}

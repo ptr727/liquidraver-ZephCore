@@ -130,7 +130,7 @@ buffer. On a companion a local reply is bounded by the app's CLI frame (175 byte
 because the app path cannot be told apart from the USB console. When a section does not fit,
 the reply ends with ` next:N` and `hw <section> N` (or `hw N` for the summary) resumes from that
 line. A single line too long for a whole page, or longer than 159 characters, is cut to fit and ends in `...`, so a resume
-always moves past it.
+always moves past it. A start index past the last line answers `no line N, the report has M`.
 
 Each page is computed afresh, so a resumed `hw i2c scan` re-scans the bus. If a chip appears or
 disappears between pages, the line numbering can move and a resumed page may skip or repeat a
