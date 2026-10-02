@@ -7,6 +7,8 @@ generic DM9051 fixes) and PR #2 (work/ch390-support, the CH390 support). One
 section per upstream commit follows, carrying its rationale. The CH390
 devicetree binding (fork commit d8e2dc8313ea) is not part of this diff: it is
 a new file, so it lives in patches/zephyr-new/dts/bindings/ethernet/ instead.
+Nor is the series' CH390 instance in tests/drivers/build_all/ethernet: this
+diff is limited to drivers/, and ZephCore builds no Zephyr tests.
 When these land upstream, drop the matching sections and regenerate.
 
 == drivers: ethernet: dm9051: service ISR while the INT line is asserted (fork 939673f2098b) ==
