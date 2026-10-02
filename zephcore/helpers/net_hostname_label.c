@@ -69,6 +69,10 @@ void zc_net_set_hostname(const char *name)
 		host[n] = '\0';
 	}
 
+	if (strcmp(host, net_hostname_get()) == 0) {
+		return;         /* every CLI save comes here, rename or not */
+	}
+
 	int rc = net_hostname_set(host, n);
 
 	if (rc < 0) {
