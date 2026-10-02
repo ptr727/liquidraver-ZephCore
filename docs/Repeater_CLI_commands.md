@@ -52,7 +52,7 @@ it is available on **all four roles** — companion, repeater, room server and o
 | `hw i2c [start]` | Devicetree-declared I2C inventory. **Not a bus scan** — no bus traffic |
 | `hw i2c scan [start]` | Live scan of 0x08–0x77 on each bus carrying a declared device, naming declared addresses (see the coverage note below) |
 | `hw gps [start]` | GNSS driver compatible, transport, baud, and enable state |
-| `hw sensors [start]` | Environment and power sensor availability, and which channels report |
+| `hw sensors [start]` | Each sensor the boot probe found, environment and power monitors alike, and the fields it reports |
 | `hw all [start]` | Every section above, in order |
 | `hw <anything else>` | Usage string |
 
