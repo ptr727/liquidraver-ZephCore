@@ -109,11 +109,12 @@ Every field is something the firmware *knows*. It never infers:
   bus, reports `unprobed`, not `absent`. The probe stops at the first chip holding a valid
   time.
 - `absent` means the read ended in `-EIO`, which is how every driver here reports an address
-  NACK, or that something answered but did not behave like an RTC. The nRF drivers also
-  report any other failed transfer as `-EIO`, so on nRF a bus error during the probe reads as
-  `absent` too; the driver gives nothing finer. `present` means the probe accepted the chip as
-  an RTC, which includes a chip whose time is not valid BCD when its power-loss flag is set or
-  cannot be read, since that chip is then adopted for write-back.
+  NACK, or that something answered but did not behave like an RTC. On every driver here a data
+  NACK is also `-EIO`, and the nRF drivers report any other bus error event the same way, so
+  such a failure reads as `absent` too; the drivers give nothing finer. `present` means the
+  probe accepted the chip as an RTC, which includes a chip whose time is not valid BCD when its
+  power-loss flag is set or cannot be read, since the first such chip is adopted for write-back
+  (marked `*`).
 - A build with no sensor support reports `not compiled in`, which is a different statement
   from a sensor manager that looked and found nothing.
 
