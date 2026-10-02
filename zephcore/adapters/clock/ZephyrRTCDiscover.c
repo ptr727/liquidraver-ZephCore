@@ -138,9 +138,16 @@ static bool rtc_probe(uint32_t *epoch_out)
 			 * driver merely failed to initialise. */
 			continue;
 		}
-		if (i2c_burst_read(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) != 0) {
-			s_state[i] = ZEPHCORE_RTC_ABSENT;
-			continue;  /* no ACK => chip absent */
+		int rc = i2c_burst_read(d->bus, d->addr, d->time_reg, blk, sizeof(blk));
+
+		if (rc != 0) {
+			/* The nRF and ESP32 drivers report an address NACK as
+			 * -EIO. A timeout or a busy bus is not evidence the chip
+			 * is missing, so that leaves the candidate UNPROBED. */
+			if (rc == -EIO) {
+				s_state[i] = ZEPHCORE_RTC_ABSENT;
+			}
+			continue;
 		}
 
 		/* Mask off flag/century bits. We trust this is a real RTC (vs. an

@@ -105,7 +105,8 @@ Every field is something the firmware *knows*. It never infers:
   an RTC fitted but not declared is invisible to the firmware, and the reply says exactly that.
   A board that declares candidates in a build with RTC autodiscovery disabled reports
   `rtc: N declared, autodiscovery disabled`.
-- An RTC candidate the boot probe never reached reports `unprobed`, not `absent`. The probe
+- An RTC candidate the boot probe never reached, or whose read failed for a reason other than
+  no reply (a timeout, a busy bus), reports `unprobed`, not `absent`. The probe
   stops at the first chip holding a valid time.
 - A build with no sensor support reports `not compiled in`, which is a different statement
   from a sensor manager that looked and found nothing.
