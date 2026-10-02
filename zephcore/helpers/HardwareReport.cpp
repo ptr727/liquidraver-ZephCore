@@ -289,8 +289,10 @@ void section_board(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 
 	uint32_t cause;
 	if (zephcore_boot_reset_cause(&cause)) {
-		char causes[96];
-		zephcore_boot_reset_cause_str(causes, sizeof(causes));
+		/* 128 holds every label without hints, per boot_info.h. Hints are
+		 * off: these lines page over LoRa, where width costs packets. */
+		char causes[128];
+		zephcore_boot_reset_cause_str(causes, sizeof(causes), false);
 		/* A cause of 0 is a real answer -- the chip reported no known
 		 * cause -- and is not the same as the platform being unable to
 		 * tell us, which is the branch below. */
@@ -590,8 +592,10 @@ void section_summary(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 	 * the schema depend on the board. */
 	uint32_t cause;
 	if (zephcore_boot_reset_cause(&cause)) {
-		char causes[96];
-		zephcore_boot_reset_cause_str(causes, sizeof(causes));
+		/* 128 holds every label without hints, per boot_info.h. Hints are
+		 * off: these lines page over LoRa, where width costs packets. */
+		char causes[128];
+		zephcore_boot_reset_cause_str(causes, sizeof(causes), false);
 		sink_line(s, "reset%s", causes[0] ? causes : " none");
 	} else {
 		sink_line(s, "reset not supported");

@@ -7,12 +7,10 @@
 #include "observer_creds.h"
 
 #include <mesh/Utils.h>
-#include <mesh/LoRaConfig.h>
-#include <adapters/radio/LoRaRadioBase.h>
+#include <adapters/radio/LoRaRadio.h>
 #include <adapters/rng/ZephyrRNG.h>   /* generateFirstBootIdentity (hardened keygen) */
 #include <helpers/MeshcoreJson.h>
 
-#include <zephyr/fs/fs.h>
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(zephcore_observer, CONFIG_ZEPHCORE_OBSERVER_LOG_LEVEL);
 
@@ -22,6 +20,7 @@ LOG_MODULE_REGISTER(zephcore_observer, CONFIG_ZEPHCORE_OBSERVER_LOG_LEVEL);
 #include <time.h>
 
 #include <ZephyrMQTTPublisher.h>
+#include <helpers/PacketLog.h>
 
 /* Forward declaration — implemented in ZephyrWiFiStation.c */
 extern "C" {
@@ -58,31 +57,9 @@ void ObserverMesh::begin(RepeaterDataStore *store, struct ObserverCreds *creds)
 	_prefs.tx_power_dbm = 0;   /* observer never TXes anyway */
 	/* freq=869.618, bw=62.5, sf=7 already set by initNodePrefs */
 
-	/* First boot has to be detected BEFORE loadPrefs(): the store is shared
-	 * with the repeater and its no-file branch re-runs initNodePrefs(), applies
-	 * *repeater* defaults over whatever the caller passed in, saves them, and
-	 * returns true.  So the observer values set above are silently discarded on
-	 * a fresh unit and there is no return code that says so.  Probing for the
-	 * file is the only observer-local way to tell — the alternative, changing
-	 * the no-file branch, would alter repeater and room-server behaviour. */
-	char prefs_path[64];
-	struct fs_dirent prefs_ent;
-	snprintf(prefs_path, sizeof(prefs_path), "%s/prefs", _store->getBasePath());
-	const bool first_boot = (fs_stat(prefs_path, &prefs_ent) < 0);
-
-	/* Load persisted prefs (overrides defaults with saved values) */
+	/* Persisted prefs override the defaults above; on a fresh unit the store
+	 * saves these defaults as they are. */
 	_store->loadPrefs(_prefs);
-
-	if (first_boot) {
-		/* Re-apply the observer defaults the shared no-file branch overwrote,
-		 * then persist them so this runs exactly once.  Only the prefs file is
-		 * rewritten — obs_creds (WiFi/MQTT/IATA/lat/lon) is a separate file and
-		 * is never touched here. */
-		_prefs.cr           = 5;
-		_prefs.tx_power_dbm = 0;
-		_store->savePrefs(_prefs);
-		LOG_INF("First boot — saved observer prefs defaults");
-	}
 
 	/* Load or generate node identity.
 	 *
@@ -147,10 +124,10 @@ void ObserverMesh::buildStatusJson(const char *status, char *out, size_t out_siz
 		uptime_secs,
 		0u,                                              /* debug_flags */
 		0u,                                              /* queue_len */
-		((LoRaRadioBase *)_radio)->getNoiseFloor(),
+		((LoRaRadio *)_radio)->getNoiseFloor(),
 		0u,                                              /* tx_air_secs */
 		0u,                                              /* rx_air_secs */
-		((LoRaRadioBase *)_radio)->getPacketsRecvErrors(),
+		((LoRaRadio *)_radio)->getPacketsRecvErrors(),
 		false,                                           /* repeat: observer never forwards */
 	};
 	meshcore_build_status_json(out, out_size, &sj);
@@ -193,8 +170,14 @@ void ObserverMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len)
 
 void ObserverMesh::logRx(Packet *packet, int len, float score)
 {
-	(void)packet; (void)len;
+	packet_log_rx(getLogDateTime(), packet, _radio->getLastRSSI(), score, _radio->getEstAirtimeFor(len));
 	_last_score = score;
+}
+
+void ObserverMesh::logTx(Packet *packet, int len)
+{
+	(void)len;
+	packet_log_tx(getLogDateTime(), packet);
 }
 
 void ObserverMesh::enqueuePacket(Packet *pkt)
@@ -440,8 +423,7 @@ bool ObserverMesh::handleCLI(const char *command, char *reply, int reply_size)
 			if (f >= 300.0f && f <= 1000.0f) {
 				_prefs.freq = f;
 				_store->savePrefs(_prefs);
-				((LoRaRadioBase *)_radio)->reconfigureWithParams(
-					_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
+				((LoRaRadio *)_radio)->reconfigure();
 				snprintf(reply, reply_size, "freq=%.3f MHz", (double)_prefs.freq);
 			} else {
 				snprintf(reply, reply_size, "ERR freq must be 300-1000 MHz");
@@ -452,8 +434,7 @@ bool ObserverMesh::handleCLI(const char *command, char *reply, int reply_size)
 			if (sf >= 7 && sf <= 12) {
 				_prefs.sf = (uint8_t)sf;
 				_store->savePrefs(_prefs);
-				((LoRaRadioBase *)_radio)->reconfigureWithParams(
-					_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
+				((LoRaRadio *)_radio)->reconfigure();
 				snprintf(reply, reply_size, "sf=%u", _prefs.sf);
 			} else {
 				snprintf(reply, reply_size, "ERR sf must be 7-12");
@@ -477,8 +458,7 @@ bool ObserverMesh::handleCLI(const char *command, char *reply, int reply_size)
 			if (bw >= ZC_RADIO_BW_MIN_KHZ && bw <= ZC_RADIO_BW_MAX_KHZ) {
 				_prefs.bw = bw;
 				_store->savePrefs(_prefs);
-				((LoRaRadioBase *)_radio)->reconfigureWithParams(
-					_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
+				((LoRaRadio *)_radio)->reconfigure();
 				snprintf(reply, reply_size, "bw=%.2f kHz", (double)_prefs.bw);
 			} else {
 				snprintf(reply, reply_size, "ERR bw must be 7-500 kHz (or index 0-5)");
@@ -489,8 +469,7 @@ bool ObserverMesh::handleCLI(const char *command, char *reply, int reply_size)
 			if (cr >= 5 && cr <= 8) {
 				_prefs.cr = (uint8_t)cr;
 				_store->savePrefs(_prefs);
-				((LoRaRadioBase *)_radio)->reconfigureWithParams(
-					_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
+				((LoRaRadio *)_radio)->reconfigure();
 				snprintf(reply, reply_size, "cr=%u", _prefs.cr);
 			} else {
 				snprintf(reply, reply_size, "ERR cr must be 5-8");

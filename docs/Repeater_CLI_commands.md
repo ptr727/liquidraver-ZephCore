@@ -7,7 +7,7 @@ All commands are sent over USB serial (CDC-ACM). Commands sent remotely over the
 **Sources:**
 - `helpers/CommonCLI.cpp` — common commands shared by all roles
 - `app/RepeaterMesh.cpp` — repeater-specific commands (`setperm`, `get acl`, `region`, `discover.neighbors`)
-- `app/RepeaterRegionCLI.cpp` / `app/RoomServerRegionCLI.cpp` — the `region` sub-CLI
+- `helpers/CommonCLI.cpp` `handleRegionCmd()` — the `region` sub-CLI (as upstream); the `region load` line reader stays in each role
 - `app/RepeaterUplink.cpp` — `get`/`set uplink.*` (ESP32 uplink builds only)
 - `app/RoomServerMesh.cpp` — room-server-specific commands (`room.post`)
 
@@ -26,12 +26,14 @@ All commands are sent over USB serial (CDC-ACM). Commands sent remotely over the
 |---------|-------------|
 | `ver` | Firmware version and build date |
 | `board` | Board manufacturer name |
+| `power` | Power sources, as upstream: `batt:<mV> mV usb:<yes\|no\|n/a> solar_chg:<yes\|no\|n/a> ext:<yes\|no> charger:<yes\|no>`. `usb` is the nRF52 VBUS detect (`n/a` on other chips); no board reports a solar-charger or charging line yet, so `solar_chg` is `n/a` and `charger` is `no` everywhere. `ext` is the same signal the low-battery shutdown checks |
 | `reboot` | Reboot immediately |
+| `poweroff` / `shutdown` | Power the node off, as upstream: GPS, sensor and buzzer rails off, LoRa held in reset, then System OFF (the power latch released first on soft-power boards). Wake with the user button (nRF) or a power cycle — a node without a reachable button stays off until someone gets to it, so think twice before sending it over remote admin. The shutdown reason `User Request` is recorded for `get pwrmgt.bootreason`. Replies `OK - powering off`; deferred like `reboot` |
 | `start dfu` | nRF52: reboot into the UF2 bootloader for drag-and-drop update. ESP32-S3: reboot into the ROM download mode on USB-Serial-JTAG (`303a:1001`), so ordinary `esptool write-flash` and browser flashers can reach the chip. Every other chip replies with an error and does **not** reboot — ESP32-C3/C6 and classic ESP32 never lose the port to USB OTG so esptool resets them itself, and nRF54L15/MG24/STM32WL have no USB device peripheral and are flashed over SWD |
 | `start ota` | ESP32: start WiFi AP + HTTP OTA server. nRF52: reboot into BLE OTA DFU mode |
 | `stop ota` | Stop WiFi OTA server (ESP32 only) |
-| `clkreboot` | Set clock to a fixed reference time (15 May 2024 8:50pm UTC) then reboot |
-| `powersaving` | Not implemented |
+| `clkreboot` | Set clock to a fixed reference time (15 May 2024 8:50pm UTC) then reboot. On a board with a hardware RTC the reference time is written to the chip too, as upstream, so the reset survives the reboot |
+| `powersaving` / `powersaving on` / `powersaving off` | Upstream's command and replies. On ESP32 light-sleep repeaters (boards with `light_sleep: true`) it gates light sleep: `off` (persisted) keeps the SoC awake, which also keeps a USB Serial/JTAG console attached; `on` allows sleep again, replying `on - After N s (console window)` while the console window is open, else `on - Immediate effect`. Default **on** on those builds, and prefs from firmware that stored the field without acting on it are read as on once. nRF52/nRF54L: stored, replies `on - Immediate effect` (they always idle in System ON; `off` changes nothing). Other boards: `Board not supported` |
 
 ---
 
@@ -124,6 +126,8 @@ truncated — a page that cannot say where to resume is unresumable.
 | `clock sync` | Sync clock from the sender's timestamp (only advances, cannot go backwards). Arms the 7-day mesh-time-sync suppression window. |
 | `time <unix_timestamp>` | Set RTC to a specific Unix timestamp (cannot go backwards). Arms the 7-day mesh-time-sync suppression window. |
 
+Every clock set (these commands, GPS, the app, mesh time sync, SNTP) is also written to the board's hardware RTC when it has one, so the time survives a power-off.
+
 ---
 
 ## Advertisement
@@ -141,7 +145,7 @@ truncated — a page that cannot say where to resume is unresumable.
 |---------|-------------|
 | `neighbors` | Display current neighbor list |
 | `neighbor.remove <pubkey_hex>` | Remove a neighbor entry by its public key. A prefix is accepted — the hex is truncated to at most 32 bytes and matched at whatever length you give. **Repeater only in effect:** `RoomServerMesh` does not override `removeNeighbor`, so on a room server this replies `OK` and does nothing. |
-| `discover.neighbors` | *(repeater only)* Broadcast a node discovery request to find nearby nodes. Takes no arguments — anything after it replies `Err - discover.neighbors has no options`. Not implemented on room servers. |
+| `discover.neighbors` | *(repeater only)* Broadcast a node discovery request to find nearby nodes; responses are collected for 60 s (as upstream `bf9c6cb5`). Takes no arguments — anything after it replies `Err - discover.neighbors has no options`. Not implemented on room servers. |
 
 ---
 
@@ -152,7 +156,7 @@ truncated — a page that cannot say where to resume is unresumable.
 | `password <new_password>` | Set the admin password (**max 15 characters**) |
 | `setperm <perms_hex> <pubkey_hex>` | Set ACL permissions for a node (app format: 2-char hex perms first) |
 | `setperm <pubkey_hex> <perms_dec>` | Set ACL permissions for a node (Arduino format: pubkey first, decimal perms) |
-| `get acl` | *(USB only)* List all ACL entries with permissions and public keys |
+| `get acl` | *(USB only)* List all ACL entries, as upstream: `ACL:` then one `<perms hex> <public key hex>` line per entry, printed straight to the console (the `  -> ` reply line is empty). Guest entries (permissions 0) are skipped. |
 
 > **Password length:** admin and guest passwords are capped at **15 characters** (16-byte storage incl. NUL; same limit as Arduino MeshCore). The login-send path silently truncates anything longer, so a password >15 chars will never authenticate. Applies to `set guest.password` as well.
 
@@ -226,10 +230,13 @@ Regions control which flood packets the repeater forwards. The region tree is hi
 
 | Command | Description |
 |---------|-------------|
-| `gps` | Show GPS status (`on` or `off`) |
+| `gps` | GPS status in upstream's form: `on, active\|standby, fix\|no fix, N sats`, `off`, or `Can't find GPS`. `standby` (upstream: `deactivated`) means on but asleep between duty-cycle fixes |
+| `get gps` | The detail: `> on state=<off\|standby\|acquiring> sats=N fix=Ns ago lat= lon=`, or `no fix next=Ns` (seconds to the next wake) |
+| `gps diag` | Receiver liveness, in upstream's key form: `req:<0\|1> en:<0\|1> ok:<n> sat:<n> fix:<0\|1> fa:<ms\|never> bc:<n> sc:<n>`. `req` is the requested setting, `en` the module powered and searching (0 in duty-cycle standby), `ok` NMEA sentences the driver has parsed since boot (a count that stops rising means the module or its UART went silent, whatever `sat` says), `fa` the age of the last validated fix, `bc`/`sc` module power-on/off counts. Upstream's UART byte and bad-checksum counters are absent: the GNSS driver only passes valid sentences. Module configuration results are `get gps diag` |
+| `gps sync` | Take a fresh fix now (wake the GPS or extend its window); the fix sets the clock. `gps is off` / `gps provider not found` otherwise |
 | `gps on` | Enable GPS module |
-| `gps off` | Disable GPS module |
-| `gps setloc` | Update stored latitude/longitude from current GPS fix |
+| `gps off` | Disable GPS module. Persisted: a repeater or room server with GPS off stays off across reboots. Boards whose GPS has no power line (RAK4631, RAK3401 1W, Station G2) put the module to sleep over UART |
+| `gps setloc` | Update stored latitude/longitude from the last GPS fix (unchanged if there has been none since boot) |
 | `gps advert` | Show current location advertising policy |
 | `gps advert none` | Do not include location in advertisements |
 | `gps advert share` | Include live GPS location in advertisements |
@@ -265,7 +272,7 @@ Sample reply:
 
 **`sent=` proves transmission, not acceptance.** Only `sys=` shows what the module actually did. A module still running its factory or previously saved configuration reports `G` non-zero with the rest at `0`. Note `B0` is expected on u-blox M8 (BeiDou is deliberately disabled — only three major constellations can run concurrently), and `?0` is normal outside Japan (QZSS is regional).
 
-The generic-NMEA path sends three protocols — PMTK (MediaTek), PCAS (CASIC: Quectel L76K/L76KB, Air530Z) and UBX (u-blox) — because a WisBlock-style GPS slot can hold any of them and each family ignores what it does not understand. Related build option: `CONFIG_ZEPHCORE_GPS_NAV_MODE` sets the CASIC navigation dynamic model (`$PCAS11`), defaulting to stationary for repeaters and room servers and automotive otherwise. It is worth setting because that model is stored *in the module* and survives reflashing the host — a slot module that previously lived in another device can arrive stuck in an airborne model that quietly degrades fixes on a fixed site.
+The generic-NMEA path sends three protocols — PMTK (MediaTek), PCAS (CASIC: Quectel L76K/L76KB, Air530Z) and UBX (u-blox) — because a WisBlock-style GPS slot can hold any of them and each family ignores what it does not understand. Related build option: `CONFIG_ZEPHCORE_GPS_NAV_MODE` sets the CASIC navigation dynamic model (`$PCAS11`), defaulting to stationary for repeaters and room servers and automotive otherwise. It is worth setting because that model is stored *in the module* and survives reflashing the host — a slot module that previously lived in another device can arrive stuck in an airborne model that quietly degrades fixes on a fixed site. CASIC modules do not save the other settings, so about a second after every GPS power-on (`gps on` and each duty-cycle wake) the sentence selection, navigation model and constellation set (`$PCAS03`, `$PCAS11`, `$PCAS04`; on generic-NMEA boards also MediaTek's constellations, EASY and AIC) are written again; a board whose standby cuts the supply would otherwise fall back to GPS + BeiDou after its first sleep. Every GNSS board does this by default (`CONFIG_ZEPHCORE_GPS_REAPPLY`); other receivers ignore the sentences.
 
 Caveats: the `sys=` tally needs `CONFIG_ZEPHCORE_GPS_SAT_DIAG` (default on for repeaters, off for companions to save RAM) — the reply says so when built without it. Only the raw-UART path is re-run on `gps on`; boards with a real GNSS driver (Air530Z, LC76G) keep reporting their boot-time result, because that path goes through `modem_chat_run_script()`, which is safe only at boot. On those boards `E0` is also expected — the Air530Z driver supports GPS/GLONASS/BeiDou but not Galileo, and the firmware falls back automatically.
 
@@ -278,6 +285,8 @@ Caveats: the `sys=` tally needs `CONFIG_ZEPHCORE_GPS_SAT_DIAG` (default on for r
 | `sensor list [<start_idx>]` | List custom sensor settings (paginated at 134 chars) |
 | `sensor get <key>` | Get a custom sensor setting value by key |
 | `sensor set <key> <value>` | Set a custom sensor setting value |
+
+As upstream, the one setting is `gps` (`0`/`1`), listed only on a board with a GPS; `sensor set gps_interval <sec>` also works and sets the duty interval. Neither is saved — `gps on|off` and `set gps duty` are.
 
 ---
 
@@ -315,6 +324,20 @@ All `set uplink.*` changes are saved immediately and only applied after reboot.
 | `set uplink.mqtt.iata <code>` | Set MQTT site code *(reboot required)* |
 
 ---
+
+## Companion WiFi (`CONFIG_ZEPHCORE_COMPANION_WIFI`)
+
+Companion builds of boards whose `zephcore.yml` declares `capabilities: wifi: true` (the PSRAM ESP32-S3 boards, plus Heltec V3, Wireless Tracker and the two C6 boards with fewer contacts) join a WiFi network and serve the companion protocol over TCP on port 5000, beside BLE and USB. Upstream's commands and replies; every change applies on the next reboot. Reachable over USB, from the app's CLI and, as upstream, over the air from a contact with remote CLI permission — including `get wifi.pwd`.
+
+| Command | Description |
+|---------|-------------|
+| `set wifi.ssid <name>` | Network to join (up to 32 characters; spaces allowed) |
+| `set wifi.pwd <password>` | Its password (up to 63 characters; empty = open network) |
+| `get wifi.ssid` / `get wifi.pwd` | The saved values (`(not set)` for no SSID) |
+| `set wifi.enabled <0\|1>` / `get wifi.enabled` | Join the saved network at boot (default 1; nothing happens until an SSID is set) |
+| `set wifi.clear` | Forget SSID and password |
+| `get wifi.status` | `connected` once the link is up and DHCP has an address, else `disconnected` |
+| `get wifi.ip` | The address the app connects to (`(not connected)` otherwise) |
 
 ## `get` — Read Configuration
 
@@ -362,6 +385,7 @@ All `set uplink.*` changes are saved immediately and only applied after reboot.
 | `get gps diag` | What the last GPS module-configuration attempt did — which path ran, bytes sent, and tracked satellites per constellation. See **GPS configuration diagnostics** in the GPS section for the field reference |
 | `get meshtimesync` | Mesh time-sync state + live dry-run: on/off, eligible voter count, votes for/against, consensus skew and radius, would-be verdict (`ok`/`in-band`/`step±N`/`abstain (reason)`/`hold (reason)`; a recent clock set — manual or GPS — shows as `hold (suppressed)`, and a backward step a forward-only role would refuse is annotated `(skipped: forward-only)`), step counters, suppression countdown, and a per-sender evidence table (`prefix hops count skew E`, `E` = counted toward the verdict above). Entries that count print first, so a size-capped reply never hides the ones that explain the summary; if the table doesn't fully fit, a trailing `+N more` shows how many were left out. Sensing runs even while off, so this works as a dry-run before enabling. Over remote admin the reply is truncated to the packet size (summary always fits); the full table needs the USB CLI. |
 | `get probe.interval` | Seconds between periodic radio measurements (noise-floor sample + CAD probe). 0 = CAD probing off |
+| `get loop.wakes` | Debug builds only (`CONFIG_ZEPHCORE_LOOP_WAKE_STATS`, on in `debug.conf`). Event-loop wakes since boot: `wakes=N up=Ss` then a count per event bit (`bN=`, the role's `MESH_EVENT_*` bit numbers; one wake can carry several bits). Wakes per second = wakes / up. Read it twice and take the difference to measure a window. |
 | `get dc.restarts` | Duty-cycle re-arm counter — RxTimeout re-arms **plus** parked-RX watchdog recoveries, sharing one total. **Read it as a rate: divide by uptime.** A bare count is not interpretable, and the two sources it merges cost very differently. An RxTimeout re-arm is ~7 ms of deaf time (the `Calibrate(ALL)` gap in the driver's `restart_rx`) after which the chip returns to duty cycle immediately — packets, not power. A watchdog recovery means the chip sat parked in *full RX* for one to two watchdog periods (`2·(preamble+8)` symbols, floored at 250 ms) — power, not packets, since parked RX still receives. The counter cannot tell you which, so read the worst case. **Measured normal: ~250/hr on a high site at SF8/BW 62.5** (one every ~14 s), where the worst case — every event a park — costs about 3.5% of the duty cycle's savings. Nothing to act on below roughly **2000/hr**; above that the parked-RX share starts eating a meaningful fraction of the saving and it becomes worth splitting the counter to find out. A high rate means the preamble detector is tripping without a decodable packet following, which on an elevated site is usually distant marginal traffic rather than interference — cross-check `get cad.stats`, whose adaptive detPeak offset rises independently in a genuinely busy RF environment. Reset by `clear stats`. |
 | `get cad` | Always `on` — ZephCore performs CAD/LBT unconditionally and has no enable knob. Kept as a boolean reply for Arduino MeshCore app compatibility; the real status lives in `get cad.stats`. |
 | `get cad.auto` | Whether the adaptive-CAD staircase is acting on probe statistics (`on`/`off`). Set with `set cad.auto`. |
@@ -371,6 +395,11 @@ All `set uplink.*` changes are saved immediately and only applied after reboot.
 | `get extra.sf` | LR2021 side detectors: the extra spreading factors currently received alongside `sf`, comma-separated (bare, no `> ` prefix), or `No extra SF configured`. Reflects the saved prefs, not what the chip accepted — if the set became invalid after an `sf`/`bw` change it is reported here but was refused at boot (a `WRN` line says so). |
 | `get adc.multiplier` | Battery voltage ADC calibration multiplier |
 | `get bootloader.ver` | Bootloader version string |
+| `get pm` | ESP32 light-sleep builds: `> on asleep P% sleeps S/E wake tT gG oO radioR btnB [win Ns]` (`off` when powersaving is off): powersaving state, share of uptime asleep, sleeps taken out of light-sleep entries, wake causes (RTC timer, GPIO, other), sleeps that ended with the radio IRQ / user button active, and the console window left. Radio wakes should track the packets the node hears. Other builds: `Error: no light sleep on this build` |
+| `get pwrmgt.support` | `> supported` on nRF52 (VBUS detection, boot voltage), else `> unsupported` — upstream's reply |
+| `get pwrmgt.source` | nRF52: `> external` (VBUS present) or `> battery`; elsewhere `ERROR: Power management not supported` |
+| `get pwrmgt.bootreason` | `> Reset: <cause>; Shutdown: <reason>`. The cause is this boot's hardware reset cause as labels (`PIN`, `SOFTWARE`, `BROWNOUT`, `POR`, `WATCHDOG`, `LOWPOWER` for a wake from System OFF, ...), followed by `(crash <K_ERR> in <thread>, pc 0x...)` when the previous run ended in a fatal error and rebooted — resolve the pc with `addr2line` against the same build. The shutdown reason is `User Request`, `Low Voltage` or `None` |
+| `get pwrmgt.bootmv` | nRF52: battery voltage sampled at boot, `> <mV> mV` |
 | `get public.key` | Node's public key as hex. **Not** USB-only — it is answerable over remote admin, matching Arduino MeshCore. A public key is broadcast in every advert, so there is nothing to gate. |
 | `get prv.key` | *(USB only)* Node's private key as hex — the 128-char expanded form, the same one `set prv.key` takes |
 
@@ -427,9 +456,9 @@ four radio parameters together, since they are one interop-critical set.
 | `set path.hash.mode <mode>` | 0, 1, or 2 | Path hashing algorithm |
 | `set loop.detect <mode>` | `off`, `minimal`, `moderate`, `strict` | Loop detection sensitivity |
 | `set radio.rxgain <0\|1\|on\|off>` | | RX gain boost, applied live. Replies `Error: unsupported` on radios without RX boost (SX127x); the pref is still saved. |
-| `set radio.fem.rxgain <0\|1\|on\|off>` | default **1** | Routes receive through the external FEM's LNA (`1`) or around it via the FEM's bypass path (`0`), applied live. Sensitivity for battery life — `0` costs roughly 17 dB and saves the LNA's supply current. Transmit, and the driver's idle/sleep gating of the FEM, are unaffected either way. Supported only where the FEM's receive path is software-selectable and that select line is wired to the radio node as `lna-bypass-gpios` — today the three KCT8103L boards, `heltec_t096`, `heltec_wireless_tracker_v2` and `heltec_wifi_lora32_v43`. Every other board reports `Error: unsupported`: `heltec_wifi_lora32_v4`'s GC1109 has no receive-path select (its CPS is don't-care in RX, same as MeshCore); `station_g2`, `gat562_30s`, `ikoka_nano_30dbm` and `promicro_sx1262` have only the DIO2/TXEN/RXEN transmit-receive switch; `rak3401_1watt`'s SKY66122 is enabled by a standalone always-on regulator outside the radio node; and non-SX126x radios (LR1110, LR2021, SX127x) never implement it. The pref is still saved when unsupported. **Do not expect the FEM's chip-enable to be the knob** — deasserting `antenna-enable-gpios` in RX shuts the part down and takes the through path with it (~69 dB measured on a V4.3), which is what 1.17.2 did before this moved to `lna-bypass-gpios`. |
+| `set radio.fem.rxgain <0\|1\|on\|off>` | default **1** | Routes receive through the external FEM's LNA (`1`) or around it via the FEM's bypass path (`0`), applied live. Sensitivity for battery life — `0` costs roughly 17 dB and saves the LNA's supply current. Transmit, and the driver's idle/sleep gating of the FEM, are unaffected either way. Supported only where the FEM's receive path is software-selectable and that select line is wired to the radio node as `lna-bypass-gpios` — today the KCT8103L boards, `heltec_t096`, `heltec_wireless_tracker_v2`, `heltec_wifi_lora32_v43` and `heltec_wifi_lora32_v4_r8`. Every other board reports `Error: unsupported`: `heltec_wifi_lora32_v4`'s GC1109 has no receive-path select (its CPS is don't-care in RX, same as MeshCore); `station_g2`, `gat562_30s`, `ikoka_nano_30dbm` and `promicro_sx1262` have only the DIO2/TXEN/RXEN transmit-receive switch; `rak3401_1watt`'s SKY66122 is enabled by a standalone always-on regulator outside the radio node; and non-SX126x radios (LR1110, LR2021, SX127x) never implement it. The pref is still saved when unsupported. **Do not expect the FEM's chip-enable to be the knob** — deasserting `antenna-enable-gpios` in RX shuts the part down and takes the through path with it (~69 dB measured on a V4.3), which is what 1.17.2 did before this moved to `lna-bypass-gpios`. |
 | `set rxduty <0\|1\|on\|off>` | | RX duty cycle mode *(reboot required)*. Window timing auto-sized per SF/BW/preamble from the SX126x datasheet constraints (boot log line `rxduty:` shows the result). Zero-loss guarantee assumes senders on preamble-32 firmware (current MeshCore at SF≤8); legacy preamble-16 senders are only caught ~50% worst-phase — keep off until the local mesh has converted. Presets with 16-symbol preambles (SF≥9) fall back to continuous RX automatically. |
-| `set display.rotate <0\|1\|on\|off>` | default **0** | Rotate the display 180 degrees, for cases and upgrade kits that mount the screen upside down (e.g. the Meshnology N37E for the Wio Tracker L1). Applied live — the driver flips the panel's `SEGMENT_MAP` and `COM_OUTPUT_SCAN`, two bytes on the wire, and the next frame comes out rotated with no redraw and no per-frame cost. **Only full-height SSD1306 and SH1106 panels support this** (`rak4631`, `gat562_30s`, `heltec_wifi_lora32_v4`/`v43`, `lilygo_t3s3`, `station_g2`, `wio_tracker_l1`); every other panel replies `Error: this panel cannot rotate` and the pref is **not** saved, so a stored value can never disagree with what the screen shows. `lilygo_timpulse_plus` is excluded despite being an SSD1306: its 64x32 glass is windowed into a 128x64 controller at `page-offset 4`, and the COM-scan reversal flips the controller's whole range, which would move the image off the bonded region. E-paper (SSD16xx) is excluded on purpose: its driver accepts a 180-degree orientation but implements it by flipping the RAM entry mode only, which reverses byte order without reversing bit order inside each byte — it would report success and render wrong. |
+| `set display.rotate <0\|1\|on\|off>` | default **0** | Rotate the display 180 degrees, for cases and upgrade kits that mount the screen upside down (e.g. the Meshnology N37E for the Wio Tracker L1). Applied live — the driver flips the panel's `SEGMENT_MAP` and `COM_OUTPUT_SCAN`, two bytes on the wire, and the next frame comes out rotated with no redraw and no per-frame cost. **Only full-height SSD1306 and SH1106 panels support this** (`rak4631`, `gat562_30s`, `heltec_wifi_lora32_v4`/`v43`/`v4_r8`, `lilygo_t3s3`, `station_g2`, `wio_tracker_l1`); every other panel replies `Error: this panel cannot rotate` and the pref is **not** saved, so a stored value can never disagree with what the screen shows. `lilygo_timpulse_plus` is excluded despite being an SSD1306: its 64x32 glass is windowed into a 128x64 controller at `page-offset 4`, and the COM-scan reversal flips the controller's whole range, which would move the image off the bonded region. E-paper (SSD16xx) is excluded on purpose: its driver accepts a 180-degree orientation but implements it by flipping the RAM entry mode only, which reverses byte order without reversing bit order inside each byte — it would report success and render wrong. |
 | `set input.rotate <0\|1\|on\|off>` | default **0** | Swap the joystick/D-pad axes — up/down and left/right — to match an upside-down mount. Applied live. Deliberately **separate** from `display.rotate`: a case can flip the screen without moving the stick, and boards whose panel cannot rotate can still need the axis swap. Works on every board with directional input, in both the joystick UI and the button UI (where it swaps page-prev/page-next). Non-directional keys, tap codes and long-press gestures are unaffected. |
 | `set tz.offset <-12..14>` | default **0** (UTC) | Whole-hour offset from UTC applied when formatting the **on-device clock display** — the top bar, the status page and the joystick System -> Time screen, which show e.g. `UTC+2` instead of `UTC`. Accepts `default`. **Display only, by design.** The RTC itself, `clock`, `clock sync` and `time <epoch>` all stay UTC: they round-trip with each other, apps parse them, and an offset that reached the clock would read as a jump to every timestamp consumer on the node (advert timestamps, the ACL's monotonic `sender_timestamp` gate, MeshTimeSync) — a backward clock silently mutes a node on the mesh. Whole hours only, matching upstream MeshCore's command of the same name, so half-hour zones (+5:30, -3:30) cannot be expressed. Accepted on headless nodes, where it is simply inert. |
 | `set adc.multiplier <mult>` | `0` (use board default) or 100–30000 | Battery voltage ADC calibration multiplier, set directly. Rejects non-numeric input, NaN/inf and negatives. |
@@ -482,4 +511,4 @@ four radio parameters together, since they are one interop-critical set.
 - **USB-only commands** — `get acl`, `get prv.key`, `set freq`, `log` (dump), `stats-packets`, `stats-radio`, `stats-core`, `erase` — are blocked when the command arrives over the mesh (remote admin). These are the only ones gated on `sender_timestamp == 0`; `get public.key` and `set prv.key` are **not** among them.
 - **Adaptive contention window** — `txdelay`, `rxdelay`, and `direct.txdelay` are accepted and stored for Arduino prefs compatibility but have no effect. Use `get txdelay` to inspect the current adaptive state and `set backoff.multiplier` to tune reactive backoff.
 - **Region load mode** — after `region load`, every line received is parsed as a region entry until a blank line is sent. The loaded map is only committed to the live region tree at that point; use `region save` to persist it. Region rows must be indented by at least one space, so an **unindented line that starts with a name character aborts the mode and is executed as a normal command** — the escape hatch if a `region load` is started by accident or a client dies mid-transfer. An abort discards the partial map, leaving the live region tree untouched. The exported wildcard header line `*` stays unindented and is ignored as before, so pasting the output of `region` still loads cleanly.
-- **Reboot delay** — `start dfu`, `start ota` (nRF52 BLE-DFU path only), `reboot`, `clkreboot` and `erase` defer the reset by **2 seconds** so the reply can be transmitted over LoRa first. On a companion the handler then keeps deferring in 20 ms steps until the BLE/USB transport has drained, up to a further 3 s grace. On ESP32 `start ota` starts a WiFi AP + HTTP server and does **not** reboot.
+- **Reboot delay** — `start dfu`, `start ota` (nRF52 BLE-DFU path only), `reboot`, `poweroff`, `clkreboot` and `erase` defer the reset by **2 seconds** so the reply can be transmitted over LoRa first. On a companion the handler then keeps deferring in 20 ms steps until the BLE/USB transport has drained, up to a further 3 s grace. On ESP32 `start ota` starts a WiFi AP + HTTP server and does **not** reboot.

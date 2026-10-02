@@ -6,7 +6,7 @@
  * Extracted from main_companion.cpp.
  *
  * This is a .cpp file because it accesses C++ mesh objects (CompanionMesh,
- * ZephyrDataStore, LoRaRadioBase, ZephyrBoard, ZephyrRTCClock).
+ * ZephyrDataStore, LoRaRadio, ZephyrBoard, ZephyrRTCClock).
  * The extern "C" wrappers are called from ui_task.c (C code).
  */
 
@@ -15,7 +15,6 @@
 #include <helpers/buzzer_gate.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
-#include <zephyr/drivers/regulator.h>
 #include <zephyr/sys/reboot.h>
 
 #include <zephyr/logging/log.h>
@@ -23,14 +22,16 @@ LOG_MODULE_REGISTER(zephcore_ui_actions, CONFIG_ZEPHCORE_UI_ACTIONS_LOG_LEVEL);
 
 #include <app/CompanionMesh.h>
 #include <ZephyrDataStore.h>
-#include <adapters/radio/LoRaRadioBase.h>
+#include <adapters/radio/LoRaRadio.h>
 #include <adapters/board/ZephyrBoard.h>
+#include <adapters/board/zephyr_poweroff.h>
 #include <adapters/clock/ZephyrRTCClock.h>
 #include <ZephyrBLE.h>
 #include <ZephyrSensorManager.h>
 #include "ui_task.h"
 #include <joystick_ui_hooks.h>
 #include "ui_mesh_actions.h"
+#include "ui_radio_state.h"
 
 /* UI action bit flags — set from input thread, consumed by mesh event loop */
 #define UI_ACTION_FLOOD_ADVERT      BIT(0)
@@ -52,7 +53,7 @@ LOG_MODULE_REGISTER(zephcore_ui_actions, CONFIG_ZEPHCORE_UI_ACTIONS_LOG_LEVEL);
 /* Module-local pointers, set by init */
 static CompanionMesh *s_mesh;
 static ZephyrDataStore *s_data_store;
-static mesh::LoRaRadioBase *s_lora_radio;
+static mesh::LoRaRadio *s_lora_radio;
 static mesh::ZephyrBoard *s_board;
 static mesh::ZephyrRTCClock *s_rtc_clock;
 static struct k_event *s_mesh_events;
@@ -87,7 +88,7 @@ extern "C" void ui_mesh_actions_init(struct k_event *mesh_events,
 	s_mesh_event_ui_action = mesh_event_ui_action;
 	s_mesh = static_cast<CompanionMesh *>(companion_mesh);
 	s_data_store = static_cast<ZephyrDataStore *>(data_store);
-	s_lora_radio = static_cast<mesh::LoRaRadioBase *>(lora_radio);
+	s_lora_radio = static_cast<mesh::LoRaRadio *>(lora_radio);
 	s_board = static_cast<mesh::ZephyrBoard *>(zephyr_board);
 	s_rtc_clock = static_cast<mesh::ZephyrRTCClock *>(rtc_clock);
 }
@@ -108,10 +109,8 @@ extern "C" void mesh_send_zerohop_advert(void)
 
 extern "C" void mesh_gps_set_enabled(bool enable)
 {
-	/* Toggle GPS hardware immediately (lightweight, no flash) */
-	gps_enable(enable);
-
-	/* Defer the flash write (savePrefs) to mesh thread */
+	/* Applied on the mesh thread with the prefs write: the GPS state
+	 * machine runs on the main thread only (ZephyrGPSManager.h). */
 	atomic_set(&pending_gps_enabled, enable ? 1 : 0);
 	atomic_or(&pending_ui_actions, UI_ACTION_GPS_TOGGLE);
 	k_event_post(s_mesh_events, s_mesh_event_ui_action);
@@ -119,7 +118,9 @@ extern "C" void mesh_gps_set_enabled(bool enable)
 
 extern "C" void mesh_ble_set_enabled(bool enable)
 {
+#if IS_ENABLED(CONFIG_BT)
 	zephcore_ble_set_enabled(enable);
+#endif
 	atomic_set(&pending_ble_disabled, enable ? 0 : 1);
 	atomic_or(&pending_ui_actions, UI_ACTION_BLE_TOGGLE);
 	k_event_post(s_mesh_events, s_mesh_event_ui_action);
@@ -175,10 +176,7 @@ extern "C" void mesh_save_path_hash_mode(uint8_t mode)
 
 extern "C" void mesh_save_gps_duty_sec(uint32_t sec)
 {
-	/* Apply immediately (lightweight, no flash) — same split as mesh_gps_set_enabled. */
-	gps_set_poll_interval_sec(sec);
-
-	/* Defer the flash write (savePrefs) to mesh thread */
+	/* Applied on the mesh thread, as mesh_gps_set_enabled. */
 	atomic_set(&pending_gps_duty_sec, (atomic_val_t)sec);
 	atomic_or(&pending_ui_actions, UI_ACTION_GPS_DUTY_SAVE);
 	k_event_post(s_mesh_events, s_mesh_event_ui_action);
@@ -206,27 +204,6 @@ extern "C" void mesh_set_leds_disabled(bool disabled)
 	atomic_set(&pending_leds_disabled, disabled ? 1 : 0);
 	atomic_or(&pending_ui_actions, UI_ACTION_LEDS_TOGGLE);
 	k_event_post(s_mesh_events, s_mesh_event_ui_action);
-}
-
-/* Disable power regulators for System OFF.
- * Only touches sensor power and buzzer power-gate regulators.
- * GPS is handled separately by gps_power_off_for_shutdown().
- * DO NOT touch BLE here — that corrupts controller state across reset. */
-extern "C" void mesh_disable_power_regulators(void)
-{
-#if DT_NODE_EXISTS(DT_NODELABEL(sensor_power))
-	const struct device *sensor_reg = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(sensor_power));
-	if (sensor_reg && device_is_ready(sensor_reg)) {
-		regulator_disable(sensor_reg);
-	}
-#endif
-
-#if DT_NODE_EXISTS(DT_NODELABEL(buzzer_enable))
-	const struct device *buzz_reg = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(buzzer_enable));
-	if (buzz_reg && device_is_ready(buzz_reg)) {
-		regulator_disable(buzz_reg);
-	}
-#endif
 }
 
 extern "C" void mesh_reboot_to_ota_dfu(void)
@@ -262,6 +239,7 @@ extern "C" void mesh_handle_ui_actions(void)
 
 	if (actions & UI_ACTION_GPS_TOGGLE) {
 		bool gps_en = atomic_get(&pending_gps_enabled) != 0;
+		gps_enable(gps_en);
 		s_mesh->prefs.gps_enabled = gps_en ? 1 : 0;
 		LOG_INF("GPS %s (button)", gps_en ? "on" : "off");
 		need_save = true;
@@ -336,6 +314,7 @@ extern "C" void mesh_handle_ui_actions(void)
 
 	if (actions & UI_ACTION_GPS_DUTY_SAVE) {
 		s_mesh->prefs.gps_interval = (uint32_t)atomic_get(&pending_gps_duty_sec);
+		gps_set_poll_interval_sec(s_mesh->prefs.gps_interval);
 		LOG_INF("gps_interval=%u (button)", s_mesh->prefs.gps_interval);
 		need_save = true;
 	}
@@ -347,6 +326,7 @@ extern "C" void mesh_handle_ui_actions(void)
 
 	if (actions & UI_ACTION_SAVE_RESTART) {
 		LOG_INF("rebooting (save+restart action)");
+		zephcore_persist_before_off();
 		sys_reboot(SYS_REBOOT_COLD);
 	}
 }
@@ -368,24 +348,7 @@ extern "C" void mesh_housekeeping_ui_refresh(void)
 	ui_set_clock(s_rtc_clock->getCurrentTime());
 	ui_set_tz(s_mesh->prefs.tz_offset);
 
-	ui_set_radio_params(
-		s_lora_radio->getActiveFrequencyHz(),
-		s_lora_radio->getActiveSpreadingFactor(),
-		s_lora_radio->getActiveBandwidthKHzX10(),
-		s_lora_radio->getActiveCodingRate(),
-		s_lora_radio->getConfiguredTxPower(),
-		s_lora_radio->getNoiseFloor());
-	ui_set_radio_runtime(
-		s_lora_radio->getActiveSyncWord(),
-		s_lora_radio->getActivePreambleLength(),
-		s_lora_radio->isRxDutyCycleEnabled(),
-		s_lora_radio->isRadioReady(),
-		s_lora_radio->isInRecvMode(),
-		s_lora_radio->isTxActive());
-	ui_set_radio_stats(
-		s_lora_radio->getPacketsRecv(),
-		s_lora_radio->getPacketsSent(),
-		s_lora_radio->getPacketsRecvErrors());
+	ui_push_radio_state(*s_lora_radio);
 
 	/* Update GPS satellite count even without fix. When GPS is disabled, push
 	 * a zeroed count — gps_enable(false) already zeros the internal count, but

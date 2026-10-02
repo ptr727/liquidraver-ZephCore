@@ -1,6 +1,7 @@
 # ZephCore Architecture Guide
 
 > Comprehensive developer reference for the ZephCore codebase — a Zephyr RTOS port of the Arduino MeshCore LoRa mesh networking firmware.
+> For the system view (layers, rules, threading, upstream policy) start with [DESIGN.md](DESIGN.md); decisions are in [adr/](adr/README.md).
 
 ---
 
@@ -54,8 +55,10 @@ zephcore/
 │   ├── ContentionTracker.cpp        # Adaptive contention window (EMA, backoff)
 │   ├── StaticPoolPacketManager.cpp  # Fixed-size packet pool (32 slots)
 │   ├── main_companion.cpp  # Companion mode entry point + event loop
-│   ├── main_repeater.cpp   # Repeater mode entry point + event loop
-│   └── main_room_server.cpp # Room server mode entry point + event loop
+│   ├── main_repeater.cpp   # Repeater entry point: its mesh object + ServerRole
+│   ├── main_room_server.cpp # Room server entry point: its mesh object + ServerRole
+│   ├── server_main_common.{h,cpp} # Both server roles: USB CLI, event loop, boot
+│   └── mesh_events.h       # Event bits shared by every role's loop
 │
 ├── include/mesh/           # Core interfaces (shared with Arduino MeshCore)
 │   ├── Mesh.h, Dispatcher.h, Packet.h, Identity.h, Utils.h
@@ -63,46 +66,47 @@ zephcore/
 │   ├── Radio.h             # Abstract radio interface
 │   ├── Board.h, Clock.h, RNG.h, RTC.h  # HAL interfaces
 │   ├── ContentionTracker.h # Adaptive contention window state
-│   ├── LoRaConfig.h        # Default radio parameters
-│   ├── RadioIncludes.h     # Compile-time radio driver selection
 │   ├── SimpleMeshTables.h  # Hash-based packet deduplication
 │   └── StaticPoolPacketManager.h  # Fixed pool allocator
 │
 ├── adapters/               # Zephyr HAL implementations
 │   ├── radio/              # LoRa radio drivers
-│   │   ├── LoRaRadioBase.cpp/h    # Shared TX/RX state machine, noise floor, AGC
-│   │   ├── SX126xRadio.cpp/h      # SX126x adapter (native Zephyr driver, patched)
-│   │   ├── SX127xRadio.cpp/h      # SX127x adapter (loramac-node backend)
-│   │   ├── LR1110Radio.cpp/h      # LR1110 adapter (custom Zephyr driver)
-│   │   ├── LR2021Radio.cpp/h      # LR2021 adapter (custom driver)
-│   │   ├── radio_common.h         # Shared radio types and constants
-│   │   ├── lr11xx/                # LR11xx low-level HAL (SPI, GPIO, Semtech SDK)
-│   │   └── lr20xx/                # LR20xx low-level HAL (Semtech SDK)
+│   │   ├── LoRaRadio.cpp/h        # The one radio adapter: TX/RX state machine, noise floor, CAD, hygiene
+│   │   ├── LoRaRadioOps.h         # Per-family ops table (driver extension functions)
+│   │   ├── radio_ops_<family>.cpp # sx126x / sx127x / lr1110 / lr2021 tables (one linked per build)
+│   │   ├── CadController.*        # Adaptive CAD controller (host-tested)
+│   │   ├── NoiseFloorEstimator.h  # Noise-floor EMA (host-tested)
+│   │   └── radio_common.h, radio_tuning.h  # Shared constants
 │   ├── ble/ZephyrBLE.cpp/h        # BLE NUS service, pairing, TX congestion
-│   ├── board/ZephyrBoard.cpp/h    # Battery ADC, LEDs, reboot, bootloader
+│   ├── board/ZephyrBoard.cpp/h    # Battery ADC, LEDs, reboot, bootloader, pwrmgt reasons
+│   ├── board/zephyr_poweroff.c/h  # The one power-off path + shutdown-reason marker
 │   ├── clock/                     # Millisecond uptime + software RTC + I2C RTC discovery
 │   ├── datastore/ZephyrDataStore.cpp/h  # LittleFS persistence
-│   ├── gps/ZephyrGPSManager.cpp/h      # GNSS state machine, power mgmt
+│   ├── gps/ZephyrGPSManager.cpp/h      # GNSS state machine, fix validation, public API
+│   ├── gps/gps_power.cpp, gps_module_cfg.cpp, gps_internal.h  # module power; module configuration + diag
 │   ├── mqtt/ZephyrMQTTPublisher.c/h    # MQTT packet publisher (observer / uplink)
+│   ├── mqtt/uplink_creds.h             # WiFi/MQTT/location credentials struct (persisted by app/observer_creds)
 │   ├── ota/wifi_ota.c/h           # WiFi SoftAP + HTTP firmware upload
 │   ├── rng/ZephyrRNG.cpp/h        # Hardware CSPRNG with PRNG fallback
-│   ├── sensors/                   # I2C env sensors + power monitors
+│   ├── sensors/                   # ZephyrSensorManager (upstream SensorManager) over the I2C env sensors + power monitors
 │   ├── transport/                 # TCP companion (native Linux) + serial companion (STM32WL)
 │   ├── usb/                       # USB CDC for companion + repeater
 │   └── wifi/ZephyrWiFiStation.c/h # WiFi station client (ESP32)
 │
 ├── app/                    # Application layer
 │   ├── CompanionMesh.cpp/h       # Phone-connected companion logic
+│   ├── CompanionProtocol.h       # Companion protocol opcodes and codes
+│   ├── CompanionCLI.h            # Companion side of CommonCLI
+│   ├── VContact.cpp              # Loopback admin contact (CompanionMesh members)
 │   ├── RepeaterMesh.cpp/h        # Autonomous repeater logic
-│   ├── RepeaterRegionCLI.cpp     # Repeater `region` CLI commands
 │   ├── RepeaterUplink.cpp        # Repeater WiFi+MQTT uplink (ESP32)
 │   ├── RepeaterDataStore.cpp/h   # Repeater-specific persistence paths
 │   ├── RoomServerMesh.cpp/h      # Store-and-forward room server (BBS)
-│   ├── RoomServerRegionCLI.cpp   # Room server `region` CLI commands
 │   ├── ObserverMesh.cpp/h        # Listen-only WiFi+MQTT observer (ESP32)
 │   └── main_observer.cpp, observer_creds.cpp/h
 │
 ├── helpers/                # Shared utilities
+│   ├── compat/                   # Arduino Stream/SHA256/FILESYSTEM over Zephyr, for upstream-verbatim code
 │   ├── BaseChatMesh.cpp/h        # Contact/channel/message base class
 │   ├── CommonCLI.cpp/h           # Serial/mesh CLI command processor
 │   ├── MeshTimeSync.cpp/h        # Mesh clock-consensus estimator (§4.9)
@@ -169,11 +173,11 @@ zephcore/
 │    ├── RX delay (score-based prioritization)    │
 │    └── Maintenance (noise floor, image cal)     │
 ├─────────────────────────────────────────────────┤
-│  LoRaRadioBase                                  │  Radio HAL
-│    ├── SX126xRadio  ──► Zephyr SX126x driver   │
-│    ├── SX127xRadio  ──► loramac-node backend    │
-│    ├── LR1110Radio  ──► Custom LR11xx driver    │
-│    └── LR2021Radio  ──► Custom LR20xx driver    │
+│  LoRaRadio + kLoRaRadioOps (one per build)      │  Radio HAL
+│    ├── sx126x ──► Zephyr SX126x driver (0003)   │
+│    ├── sx127x ──► loramac-node backend          │
+│    ├── lr1110 ──► our LR11xx driver + LBM SDK   │
+│    └── lr2021 ──► our LR20xx driver + SDK       │
 ├─────────────────────────────────────────────────┤
 │  Zephyr RTOS (kernel, drivers, BLE, FS, USB)    │  Platform
 └─────────────────────────────────────────────────┘
@@ -240,11 +244,10 @@ The Dispatcher runs a tight loop:
 ```
 loop():
   1. Check if current TX is complete → release packet, record airtime
-  2. Process next inbound packet from queue (if scheduled time has passed)
-  3. checkRecv(): Drain radio RX ring buffer
+  2. checkRecv(): Drain radio RX ring buffer
      - Parse raw bytes into Packet
-     - Flood packets: compute RX delay based on score → defer or process immediately
-     - Direct packets: process immediately
+     - Process immediately (no inbound queue / score-based RX delay: the
+       adaptive contention window replaces upstream's rxdelay)
   4. checkSend(): Check outbound queue
      - CAD: if channel busy (`isReceiving()` returns true or radio not ready),
             retry every 100-200ms (jittered) up to 4s total. On 4s timeout,
@@ -255,8 +258,6 @@ loop():
      - Final `isReceiving()` check right before TX (closes timing gap)
      - Serialize and transmit
 ```
-
-**RX Delay**: Flood packets are delayed based on signal quality. High-quality signals (high SNR, short packets) get shorter delays, allowing closer/better relays to retransmit first. Uses a lookup table approximation of `10^(0.85 - score*0.1) - 1` multiplied by airtime.
 
 **Duty Cycle**: Fixed 1-hour sliding window. Default 10%. Admin packets (REQ, RESPONSE, ANON_REQ, CONTROL) are exempt.
 
@@ -361,16 +362,18 @@ All policy timers (6 h rate limit, 7-day suppression, tenure, sample age) anchor
 
 ```
 mesh::Radio (abstract interface)
-  └── LoRaRadioBase (shared state machine, ring buffer, noise floor)
-        ├── SX126xRadio → Zephyr native SX126x driver + sx126x_ext.h
-        ├── SX127xRadio → Zephyr loramac-node backend (SX1272/76/78)
-        ├── LR1110Radio → Custom lr11xx_lora.c driver + Semtech HAL
-        └── LR2021Radio → Custom lr20xx_lora.c driver + Semtech HAL
+  └── LoRaRadio (final: state machine, ring buffer, noise floor, CAD, hygiene)
+        uses kLoRaRadioOps, the family's const table of driver extension
+        functions (LoRaRadioOps.h), one linked per build:
+          radio_ops_sx126x.cpp → Zephyr native SX126x driver + sx126x_ext.h
+          radio_ops_sx127x.cpp → Zephyr loramac-node backend (all entries NULL)
+          radio_ops_lr1110.cpp → our lr11xx_lora.c driver + lr11xx_lora.h
+          radio_ops_lr2021.cpp → our lr20xx_lora.c driver + lr20xx_lora.h
 ```
 
 Compile-time selection via the `CONFIG_ZEPHCORE_RADIO_NATIVE` / `_LR1110` / `_LR2021` / `_SX127X` Kconfig options, resolved in `RadioIncludes.h`. The native SX126x path is the default and covers SX1261/62/68, LLCC68, and the STM32WL integrated sub-GHz radio.
 
-### 5.2 LoRaRadioBase State Machine
+### 5.2 LoRaRadio State Machine
 
 **TX Flow** (LBT — current default; `cad.mode == LORA_CAD_MODE_LBT` is set unconditionally in `buildModemConfig`):
 1. `startSendRaw()` → `isReceiving()` final gate → `_tx_active = 1` → **skip** `hwCancelReceive()` and leave `_in_recv_mode = 1` so the driver sees state == RX → `configureTx()` → async send.
@@ -387,12 +390,12 @@ Compile-time selection via the `CONFIG_ZEPHCORE_RADIO_NATIVE` / `_LR1110` / `_LR
 
 ### 5.2.1 RX-Busy Gate (TX-during-RX prevention)
 
-`LoRaRadioBase::isReceiving()` is the single software source of truth for "currently receiving" and is consulted at three sites: dispatcher initial gate, dispatcher final gate, and `startSendRaw`'s last-moment gate. Logic:
+`LoRaRadio::isReceiving()` is the single software source of truth for "currently receiving" and is consulted at three sites: dispatcher initial gate, dispatcher final gate, and `startSendRaw`'s last-moment gate. Logic:
 
 ```
 isReceiving()
   ├─ false if !_in_recv_mode || _tx_active
-  ├─ true  if hwIsReceiving()         ← per-adapter; never clears IRQ
+  ├─ true  if hwIsReceiving()         ← per-adapter; clears only on grace/deadline release
   └─ isChannelActive() RSSI fallback  ← sub-preamble-threshold energy
 ```
 
@@ -406,7 +409,7 @@ The poll path is otherwise non-destructive — IRQ bits are cleared only by the 
 
 ### 5.2.2 CAD-Timeout Recovery
 
-`Dispatcher::checkSend()` tracks `cad_busy_start` while `isReceiving()` keeps the TX gate closed. If 4 s elapse (`getCADFailMaxDuration()`), the dispatcher calls `_radio->recoverRxState()` and returns. `LoRaRadioBase::recoverRxState()` does:
+`Dispatcher::checkSend()` tracks `cad_busy_start` while `isReceiving()` keeps the TX gate closed. If 4 s elapse (`getCADFailMaxDuration()`), the dispatcher calls `_radio->recoverRxState()` and returns. `LoRaRadio::recoverRxState()` does:
 
 ```cpp
 hwCancelReceive();              // RX → IDLE → STANDBY → SLEEP (REST_STATE)
@@ -431,7 +434,7 @@ Algorithm in `triggerNoiseFloorCalibrate()`:
 dBm): it gates on signal *strength* ≈ link budget, blind to distance, so
 raising it means "react to strong signals only, ignore faint/echo". The right
 LBT sensitivity is site-dependent and cannot be derived from the RSSI floor.
-`LoRaRadioBase::cadMaintenance()` (housekeeping tick) runs one calibration CAD
+`LoRaRadio::cadMaintenance()` (housekeeping tick) runs one calibration CAD
 probe per `probe.interval` (default **15 s**) at a signed **level** relative
 to the family's per-SF base detPeak, restarts RX, and classifies busy verdicts
 with a ground-truth filter. **Key property:** the probe is *skipped* when RSSI >
@@ -458,7 +461,7 @@ via `Dispatcher::onCadOffsetChanged()`. The narrowing is not cosmetic: where
 `base + offset` falls outside the hardware clamp, several offsets program the
 **same** peak, and the staircase then compares rungs that are physically
 identical and reads sampling noise as curvature. `hwCadPeakMin/Max()` report the
-driver clamp and `cadLevelMinEff()/MaxEff()` derive the usable window, so every
+driver clamp and `CadController::levelMinEff()/levelMaxEff()` derive the usable window, so every
 level the controller can reach is a distinct configuration and the `pk` shown by
 `get cad.stats` is what the chip was actually given. It binds on the LR2021, whose
 4-symbol base is 51 at SF5–7 (effective −3…+12) and 54 at SF8 (−6…+12); the
@@ -608,8 +611,12 @@ contact named `v<node_name>` that exists only toward the connected BLE/USB app.
 Chatting with it runs the same text CLI as the USB serial sideband; the reply
 comes back as normal chat messages. The firmware also uses it to emit
 unsolicited notices: a one-shot low-battery alert and a restart-reason message
-(all causes: PIN/SOFTWARE/BROWNOUT/POR/WATCHDOG/LOCKUP — offline-queue only,
-so routine power-on "noise" costs nothing over the air).
+(every cause `zephcore_boot_reset_cause_str()` can label — offline-queue only,
+so routine power-on "noise" costs nothing over the air). Two causes are silent
+when they are the only ones raised: a debugger reset, and a low-power wake
+(button or GPIO wake from System OFF), which would otherwise announce itself
+after every power cycle. A VBUS wake from System OFF on nRF52840 reports `POR`
+and is not silent. All of them still appear in the boot log.
 
 **Identity**: seed = `SHA256("zc-vcontact" || self_prv_key || counter)`,
 pubkey = that seed's Ed25519 public point — stable per node, unique per device.
@@ -694,9 +701,18 @@ restart-reason message partially compensates) and bounded by
   threshold + 200 mV (so the alert wins the race against the 90 s shutdown
   confirm window), 3500 mV on boards without auto-shutdown. Alert latches
   once per discharge cycle; re-arms on external power, recovery above
-  threshold + 150 mV, or threshold change. Sampling mirrors
-  `ui_auto_shutdown_check()` (30 s gate, 3-strike confirm) but lives in
-  `main_companion.cpp` so headless builds alert too.
+  threshold + 150 mV, or threshold change.
+
+**Low-battery policy** (`app/PowerPolicy.cpp`, every companion, UI or headless):
+the v-contact alert above and auto-shutdown (`get|set autoshutdown <mV>`, 0 =
+off; default `CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS`, **3200 mV on nRF52**, 0
+elsewhere because ESP32 cannot tell USB power from battery). Both sample every
+30 s on the housekeeping tick, act on the third low reading in a row, skip on
+external power, and treat anything under 2000 mV as "no battery" (a board without
+a cell reads 0). A shutdown with an app connected sends a v-contact notice and
+waits 1 s; otherwise it stores the reason (`Low Voltage`) for the next boot. The
+UI only draws the warning (`ui_show_low_battery()`). A stored 3300 mV (the old
+default) is migrated to 3200 once (`zc.aoff_set`).
 
 ### 6.3 RepeaterMesh
 
@@ -706,12 +722,12 @@ Autonomous operation features:
 - **Region filtering**: `RegionMap` with transport key matching per flood packet
 - **Rate limiting**: 4 requests per 120s (discovery), 4 per 180s (anonymous), 4 failed logins per 180s
 - **Neighbor tracking**: RSSI/SNR/name/timestamp table (`CONFIG_ZEPHCORE_MAX_NEIGHBOURS`, default 50 slots)
-- **Temporary radio params**: `tempradio` command applies freq/bw/sf/cr via `LoRaRadioBase::setRadioOverride()` (does not mutate `_prefs`); auto-revert timer calls `clearRadioOverride()` to fall back to saved prefs
+- **Temporary radio params**: `tempradio` command applies freq/bw/sf/cr via `LoRaRadio::setRadioOverride()` (does not mutate `_prefs`); auto-revert timer calls `clearRadioOverride()` to fall back to saved prefs
 - **WiFi+MQTT uplink** (ESP32, `CONFIG_ZEPHCORE_REPEATER_UPLINK`): `RepeaterUplink.cpp` reports packets observer-style while still repeating; configured via `set uplink.*` CLI
 
 ### 6.4 RoomServerMesh
 
-Headless store-and-forward shared message room (BBS). Clients log in with the admin or guest password and post messages; the server pushes each new post to every other logged-in client (per-client sync cursor + ACK). Reuses the repeater's ACL, region filtering, and USB CLI. Entry point `main_room_server.cpp`; build with `boards/common/room_server.conf`.
+Headless store-and-forward shared message room (BBS). Clients log in with the admin or guest password and post messages; the server pushes each new post to every other logged-in client (per-client sync cursor + ACK). Reuses the repeater's ACL, region filtering, and USB CLI, and its composition root: `main_room_server.cpp` hands `server_main_common.cpp` a `ServerRole`, so the room runs the repeater's deadline-driven loop, where the post push engine is one more deadline (`RoomServerMesh::msUntilNextPush()`). Build with `boards/common/room_server.conf`.
 
 ### 6.5 ObserverMesh
 
@@ -722,8 +738,10 @@ Listen-only node (ESP32 only): receives LoRa packets and publishes them to an MQ
 System: `ver`, `board`, `reboot`, `start dfu`, `start ota`, `erase`
 Hardware: `hw`, `hw board/rtc/i2c [scan]/gps/sensors/all` — see `Repeater_CLI_commands.md`
 Config: `set name/freq/radio/tx/flood.max/password/...`, corresponding getters
-GPS: `gps on/off/setloc/advert`, `set gps duty <sec>`
-Sensors: `sensor get/set/list`
+System (power): `poweroff`/`shutdown`, `get pwrmgt.support/source/bootreason/bootmv`
+GPS: `gps`, `gps on/off/sync/setloc/advert`, `get gps`, `set gps duty <sec>`
+Sensors: `sensor get/set/list` (upstream's `SensorManager` settings: `gps`)
+Companion extras: `get|set autoshutdown`, `get|set v.contact`, `get|set v.batteryalert`, `help`
 Stats: `stats-core/stats-radio/stats-packets`, `clear stats`
 Time: `clock`, `clock sync`, `time <epoch>`, `set meshtimesync on/off`
 
@@ -752,22 +770,24 @@ Full command reference with constraints and remote-admin restrictions: `Repeater
 ### 7.2 DataStore (`adapters/datastore/`)
 
 - **Internal**: LittleFS on flash (`/lfs`), 256-byte cache for reduced flash I/O
-- **External**: Optional LittleFS on QSPI (`/ext`) with auto-migration
+- **External**: Optional LittleFS on QSPI (`/ext`) with auto-migration. The flash is `zephyr,deferred-init` and `/ext` is
+  not automounted (`boards/common/qspi-ext.dtsi`): `zephcore_fs_mount_ext()` brings it up on first use, because a
+  boot-time probe could beat a cold power rail (first boot after a UF2 update) and silently drop to internal flash
 - **BLE bonds**: NVS (`storage_partition`, 0xD0000 on nRF52) via Zephyr settings backend (≥1.16.2)
-- **Prefs**: 152-byte binary (companion `new_prefs`), Arduino-compatible base + ZephCore extension fields, field-by-field I/O (see §13)
+- **Prefs**: `prefs.json` through upstream's `ConfigSerializer`, with upstream's key names for shared fields and ZephCore's own under `zc` (see §13); the older binary file is read once to migrate and kept
 - **Contacts**: 152-byte records, stored on external flash if available
 - **Channels**: 68-byte records (4 pad + 32 name + 32 secret)
 - **Blobs**: Fixed-size records with LRU eviction by timestamp
 
 **First-boot migration (3-way FS self-heal)**
 
-A marker file `/lfs/_zc_init` is written after the first clean ZephCore boot. On every subsequent boot it is present and the logic below is skipped. On first boot (marker absent), `main_companion.cpp` picks one of three paths before `bt_enable()` runs:
+A marker file `/lfs/_zc_init` is written after the first clean ZephCore boot. On every subsequent boot it is present and the logic below is skipped. On first boot (marker absent), `ZephyrDataStore::adoptVolume()` (called from `main_companion.cpp` before `bt_enable()`) picks one of three paths:
 
-1. **No prefs, or Arduino MeshCore prefs** → full LFS + NVS format. Arduino's `new_prefs` omits `node_lat`/`node_lon`, shifting `freq`/`sf`/`bw` by 16 bytes; `prefsLookLikeArduino()` detects this by range-checking those fields. Covers fresh installs and Arduino → ZephCore migrations.
+1. **No prefs, or a legacy prefs file whose radio preset is implausible** → full LFS + NVS format. `prefsRadioImplausible()` range-checks `freq`/`sf`/`bw` at our offsets (a `prefs.json` is always ours). Covers fresh installs and foreign volumes.
 2. **Valid ZephCore prefs + `/lfs/settings` present** → NVS-only erase (`formatNVSOnly()`). ZephCore ≤1.16.1 stored BLE bonds in `/lfs/settings` (file backend); ≤1.16.1 used 0xD0000 as app code, so bytes there may pass NVS sector validation and hang `settings_load()`. Identity/prefs/contacts are preserved; re-pairing is required.
 3. **Valid ZephCore prefs + no `/lfs/settings`** → skip format entirely. NVS was already initialised by ZephCore ≥1.16.2; bonds survive the upgrade.
 
-`loadPrefs()` also range-checks `freq`/`sf`/`bw` after deserialisation and reverts to compile-time defaults on out-of-range values, so a misread Arduino prefs file never corrupts the radio config.
+Loading also range-checks `freq`/`sf`/`bw` and falls back to the compile-time defaults on out-of-range values, so a misread file never corrupts the radio config.
 
 ### 7.3 GPS (`adapters/gps/`)
 
@@ -776,6 +796,10 @@ A marker file `/lfs/_zc_init` is written after the first clean ZephCore boot. On
 - Multi-constellation: GPS+GLONASS+Galileo+BeiDou with fallback
 - T1000-E: Complex 6-GPIO power sequencing with VRTC preservation
 - GPS time blocks phone time sync for 2 hours after last fix
+- Three files: `ZephyrGPSManager.cpp` (states, fix validation, public API), `gps_power.cpp` (power line / PMU rail / UART sleep commands, UARTE PM), `gps_module_cfg.cpp` (GNSS-API or PMTK/PCAS/UBX configuration, `get gps diag`); `gps_internal.h` carries the feature detection
+- **Main thread only.** The GNSS callbacks (system work queue) only validate and post: a validated fix is snapshotted and handed to the fix callback by `gps_process_event()` on the main thread, so the callback sets the clock and the node position directly. The UI's GPS toggles post an action too.
+- The SoC light-sleep lock is held only while ACQUIRING (`gps_hold_sleep_lock()`, tracked 1:1), never through standby
+- Boot: servers apply `prefs.gps_enabled` like upstream's `applyGpsPrefs()` (`zc.gps_set` in prefs.json marks it a real choice; older files are upgraded to on once, because older firmware ran the GPS regardless). The observer parks its GPS (`gps_park()`)
 
 **Duty cycle vs always-on**
 
@@ -809,6 +833,13 @@ Repeaters and room servers default to `CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC
 - UF2 bootloader entry via GPREGRET magic (0x57 = UF2, 0xA8 = BLE DFU)
 - TX LED bracketing for LoRa transmissions (gated by the LED master switch below)
 - Bootloader version detection via flash memory scan
+- Battery reading cached 10 s for every caller (UI, telemetry, stats, alerts), under a mutex
+- `powerOff()` (CLI `poweroff`/`shutdown`, UI power-off, low-battery shutdown all end in `zephcore_power_off()`, `board/zephyr_poweroff.c`): UI hook (heartbeat, display), GPS/sensor/buzzer rails off, LoRa held in reset, sw0 SENSE armed (nRF), power latch released, System OFF
+- Upstream's pwrmgt getters: reset cause from `boot_info`, the last fatal error from `fatal_reboot.c`'s `__noinit` record (reason, pc, lr, thread; resolve pc with `addr2line` on the same build), shutdown reason from the `/lfs/shutdn` marker, battery voltage at boot
+
+**Telemetry** (`REQ_TYPE_GET_TELEMETRY_DATA`, every role, upstream's shape): battery on channel 1, then `sensors.querySensors()` (`adapters/sensors/ZephyrSensorManager.cpp`): GPS position on channel 1 while the GPS is on and has a fix, each environment sensor and power-monitor channel found at boot on its own channel from 2 up (probe order), board-local analog sensors (T1000-E) on channel 1; then the MCU temperature on channel 1. Servers give guests battery + MCU temperature only and honour the requester's inverse permission mask, as upstream. Encoded by `helpers/compat/CayenneLPP.h`: upstream's library API and wire format, but values round to the nearest step where the library truncates.
+
+**Clock** (`adapters/clock/ZephyrRTCClock`): `setCurrentTime()` also writes the hardware RTC when the board has one (coalesced on the system work queue), as upstream's `AutoDiscoverRTCClock` writes its chip; `seedCurrentTime()` is the boot restore, not written back.
 
 **LED master switch** (`helpers/led_gate.{c,h}`, `set leds on|off`, all roles): one process-wide
 flag every LED driver consults — heartbeat and unread-message LEDs in `helpers/ui/ui_common.c`, the
@@ -821,11 +852,19 @@ Does not cover the display backlight, which has its own UI brightness setting (`
 
 ### 7.6 WiFi / MQTT / TCP Transports
 
-- **`adapters/wifi/ZephyrWiFiStation.c`**: WiFi STA client (ESP32) used by observer and repeater uplink
+- **`adapters/wifi/ZephyrWiFiStation.c`**: WiFi STA client (ESP32) used by the observer, the repeater uplink and the WiFi companion
 - **`adapters/mqtt/ZephyrMQTTPublisher.c`**: MQTT publisher for observed/uplinked packets
 - **`adapters/ota/wifi_ota.c`**: WiFi SoftAP + HTTP firmware upload to MCUboot slot1 (ESP32, requires `--sysbuild`)
-- **`adapters/transport/LinuxTCPTransport.c`**: TCP companion transport on native Linux (port 5000, MeshCore `SerialWifiInterface` framing)
-- **`adapters/transport/SerialCompanionTransport.c`**: UART companion transport (STM32WL — drop-in `zephcore_ble_*` provider, auto-selected when `CONFIG_BT=n`)
+
+Companion transports, as upstream's `companion_radio`: each is a `BaseSerialInterface`
+(`adapters/transport/CompanionInterfaces.h`) registered in one `MultiSerialInterface`, so
+BLE, USB/UART and TCP can all be connected at once; every connected client gets every
+frame (a reply to one app also reaches the other).
+
+- **`adapters/ble/ZephyrBLE.cpp`** (+ `ble_gatt_layout.cpp`, `ble_dfu.cpp`): BLE NUS
+- **`adapters/usb/ZephyrCompanionUSB.cpp`**: USB CDC-ACM, or a plain UART (`zephcore,companion-uart` chosen node; the only link on the Bluetooth-less LoRa-E5), with the text CLI
+- **`adapters/transport/TcpCompanionTransport.c`**: TCP (port 5000, MeshCore `SerialWifiInterface` framing) on native Linux and on WiFi companions (`app/CompanionWifi.cpp`, `capabilities: wifi: true`)
+- **`adapters/transport/frame_txq.c`**: the TX queue BLE and TCP share (congestion, overflow slot, lossless replies)
 
 ---
 
@@ -833,12 +872,14 @@ Does not cover the display backlight, which has its own UI brightness setting (`
 
 ### 8.1 Architecture
 
-Event-driven, no dedicated thread. All UI work on Zephyr work queues.
+Event-driven, no dedicated thread.
 
-Two UI frontends share the same plumbing (`helpers/ui/`: display, buzzer, multi-tap input filter, mesh action queue):
+Two UI frontends share the same plumbing (`helpers/ui/`: display, buzzer, multi-tap input filter, mesh action queue, clock-source tag `time_sync.c`, `ui_radio_state.h`, `telemetry_text.cpp`):
 
-- **Button UI** (`helpers/ui-button/`): single-button page cycler — most boards
-- **Joystick UI** (`helpers/ui-joystick/`): 5-way joystick menu UI (Wio Tracker L1)
+- **Button UI** (`helpers/ui-button/`): single-button page cycler — most boards, every role. Renders on the system work queue; changes mesh state only through `ui_mesh_actions` (posted, applied on the main thread).
+- **Joystick UI** (`helpers/ui-joystick/`): 5-way joystick / keypad menu UI, companion only (Wio Tracker L1, Wio L1 1W, GAT562-30S, ThinkNode M9). Keys go through a queue to `JoystickUITask::loop()` **on the main thread**, so its direct `CompanionMesh` calls (through `getMesh()`) are safe. `screens/repeater_admin.cpp` is the remote admin screen.
+
+Battery percentage on both UIs is the board's own (`ZephyrBoard::getBattPercent()`: discharge curve, or the fuel gauge). Low-battery policy is not UI: see `app/PowerPolicy.cpp` (the UI only draws `ui_show_low_battery()`).
 
 ```
 Hardware buttons → Zephyr input subsystem → Longpress filter → Multi-tap filter
@@ -1013,6 +1054,7 @@ Build strings and flash methods: `boards/supported_boards.md` and `boards/exampl
 | Station G2 | ESP32-S3 | SX1262+PA | UART GNSS | OLED (SH1106) | 16MB flash, 8MB PSRAM |
 | Heltec V3 | ESP32-S3 | SX1262 | - | OLED (SSD1306) | Console on `uart0` |
 | Heltec V4.2 / V4.3 | ESP32-S3 | SX1262+PA (GC1109 / KCT8103L) | - | OLED (SSD1306) | 16MB flash, 2MB PSRAM |
+| Heltec V4-R8 | ESP32-S3R8 | SX1262+PA (KCT8103L) | L76K (optional) | OLED (SSD1306) | 16MB flash, 8MB octal PSRAM |
 | Heltec Wireless Tracker | ESP32-S3 | SX1262 | UC6580 | TFT 160x80 (ST7735R) | - |
 | LilyGo T-Beam v1.2 | ESP32 (PICO-D4) | SX1262 | Yes | - | AXP2101 PMU; contacts capped at 160 |
 | TTGO LoRa32 | ESP32 (PICO-D4) | **SX1276** (loramac-node) | - | - | SX127x reference board |
@@ -1116,19 +1158,20 @@ Codes `0x80`–`0x90` (`PUSH_CODE_*` in `app/CompanionMesh.h`). Most used:
 | Path | Content | Format |
 |------|---------|--------|
 | `/lfs/_main.id` | Node identity | 64B private key + 32B public key |
-| `/lfs/new_prefs` | Companion preferences | 152B binary, field-by-field (Arduino-compatible superset) |
+| `/lfs/prefs.json` | Companion preferences | `ConfigSerializer` text (upstream keys + `zc{}`); atomic replace |
+| `/lfs/new_prefs` | Legacy companion preferences | 272B binary; read once to migrate, then kept for older firmware |
 | `/lfs/contacts3` or `/ext/contacts3` | Contacts | 152B × N records |
 | `/lfs/channels2` or `/ext/channels2` | Channels | 68B × N records |
 | `/lfs/adv_blobs` or `/ext/adv_blobs` | Advert cache | Fixed-size blob records |
-| `/lfs/repeater/*` | Repeater/room-server identity + prefs | 297B prefs; atomic-replace writes |
+| `/lfs/repeater/_main.id`, `prefs.json` | Repeater/room-server/observer identity + prefs | `prefs.json` as above; legacy 311B `prefs` kept after migration; atomic-replace writes |
 | `/lfs/repeater/acl` | Client ACL | 136B × N records |
 | `/lfs/repeater/regions2` | Region map | Header + 164B × N entries |
 | `storage_partition` (NVS, 0xD0000 nRF52) | BLE bonds + Zephyr settings | NVS settings backend (≥1.16.2; old `/lfs/settings` file detected by self-heal) |
 
 > **Roles are not interchangeable.** Each role formats the whole volume on its first boot if the
-> volume holds no data for that role: the companion checks `/lfs/new_prefs`
-> (`ZephyrDataStore::hasPrefs()`), the repeater/room-server/observer check `/lfs/repeater/prefs`
-> and `/lfs/repeater/_main.id` (`RepeaterDataStore::hasRoleData()`). So flashing a repeater over
+> volume holds no data for that role: the companion checks `/lfs/prefs.json` and `/lfs/new_prefs`
+> (`ZephyrDataStore::hasPrefs()`), the repeater/room-server/observer check `/lfs/repeater/prefs.json`,
+> `/lfs/repeater/prefs` and `/lfs/repeater/_main.id` (`RepeaterDataStore::hasRoleData()`). So flashing a repeater over
 > a companion — or the reverse — erases the previous role's identity, prefs and contacts, plus
 > `storage_partition` and QSPI. Export your identity before switching roles. The roles' files
 > never overlap physically (one LittleFS volume, one allocator); the reason for the wipe is that
@@ -1136,29 +1179,24 @@ Codes `0x80`–`0x90` (`PUSH_CODE_*` in `app/CompanionMesh.h`). Most used:
 > observer share `/lfs/repeater/` and the same prefs layout, so switching among *those three*
 > preserves the identity.
 
-### Preferences Binary Layouts
+### Preferences (`prefs.json`)
 
-Two distinct field-by-field serializations (NOT raw struct dumps), both Arduino-compatible
-in their shared base fields:
+Both roles store prefs as `prefs.json` through upstream MeshCore's `ConfigSerializer`
+(`helpers/ConfigSerializer.{h,cpp}`, verbatim), as upstream has since v1.17.0. The mapping from
+ZephCore's single `NodePrefs` struct is `helpers/PrefsJson.cpp`: fields whose meaning matches
+upstream's use its keys and nesting (companion: `name`, `lat`, `lon`, `radio{}`, `gps{}`,
+`repeat{disable}`, `comp{}`, `wifi{}`; servers: `name`, `pass`, `guest`, `owner`, `adv_int`,
+`f_adv_int`, `lat`, `lon`, `radio{}`, `gps{}`, `repeat{}`, `room{}`, `power{}`), and ZephCore's own
+settings live under `zc{}`. Unknown keys are ignored and missing keys keep their defaults, so
+adding a field never shifts another. Writes are atomic (`.tmp`, sync, rename); a file that does not
+parse falls back to the legacy file, then to defaults.
 
-**Companion `/lfs/new_prefs` (168 bytes)** — `adapters/datastore/ZephyrDataStore.cpp`
-`loadPrefs()`/`savePrefs()` (offset comments inline). Arduino companion layout (name, lat/lon,
-radio params, telemetry modes, BLE pin, GPS, autoadd) plus ZephCore extensions from offset 92:
-rx_boost(92), leds_disabled(93), reserved(94-95, was APC), default flood scope name/key(96-142),
-ble_disabled(143), display/wake/screen-off/auto-shutdown(144-149), rx_duty_cycle(150),
-meshtimesync(151).
-
-**Repeater/room-server `/lfs/repeater/prefs` (305 bytes)** — `app/RepeaterDataStore.cpp`
-`loadPrefs()`/`savePrefs()` (offset comments inline).  This is the only serializer for the
-repeater layout; `helpers/CommonCLI.cpp` carried a second, unreachable copy of it until it was
-removed — do not add prefs fields anywhere but the two files named in this section.
-Key ranges: name(4-36), radio(72-119), adaptive-delay(80-111, ignored at runtime),
-leds_disabled(120, magic-encoded `0xA0`/`0xA1` — the byte formerly held `agc_reset_interval`, which
-stored seconds/4, so any other value is a legacy interval and decodes to "LEDs on"),
-Arduino-bridge(127-151, read+discarded), GPS(156-161), owner_info(170-290), rx_boost/duty(290-291),
-reserved(292-293, was APC), flood_max_unscoped/advert(294-295), meshtimesync(296). Older shorter files
-load cleanly — reads past EOF are no-ops, so newer fields keep their defaults and a one-time
-upgrade block migrates them.
+**Legacy binary files.** Firmware before `prefs.json` wrote field-by-field binary files: companion
+`/lfs/new_prefs` (272 bytes) and servers `/lfs/repeater/prefs` (311 bytes; `leds_disabled` at 120
+is magic-encoded `0xA0`/`0xA1`). `helpers/PrefsCodec.cpp` reads (and, for tests, writes) both,
+pinned by host tests. On the first boot without `prefs.json` the legacy file is decoded and
+`prefs.json` written; the legacy file is **kept**, so a downgrade still boots with the settings as
+they were at the upgrade. Byte maps: `memory/prefs-format.md`.
 
 ---
 
@@ -1168,7 +1206,7 @@ upgrade block migrates them.
 
 ```
 DIO1 interrupt → Zephyr lora driver → async RX callback
-  → LoRaRadioBase::rxCallbackStatic() → SPSC ring buffer write → _rx_cb()
+  → LoRaRadio::rxCallbackStatic() → SPSC ring buffer write → _rx_cb()
     → k_event_post(MESH_EVENT_LORA_RX) → main thread wakes
       → Dispatcher::loop() → checkRecv() → drain ring buffer
         → tryParsePacket() → score + airtime calc
@@ -1176,14 +1214,14 @@ DIO1 interrupt → Zephyr lora driver → async RX callback
           → direct: process immediately
             → Mesh::onRecvPacket() → decrypt → dispatch by type
               → BaseChatMesh::onPeerDataRecv() → onMessageRecv()
-                → CompanionMesh: writeFrame() to phone or queueOfflineMessage()
+                → CompanionMesh: writeFrame() to phone or addToOfflineQueue()
 ```
 
 ### 14.2 Sending a Text Message
 
 ```
 Phone sends CMD_SEND_TXT_MSG via BLE NUS
-  → CompanionMesh::handleProtocolFrame()
+  → CompanionMesh::handleCmdFrame() → handleCmd<Name>()
     → BaseChatMesh::sendMessage(contact, text)
       → composeMsgPacket(): ECDH secret → AES encrypt → MAC
       → if contact has path: trySendDirect()
@@ -1227,8 +1265,20 @@ node enabled on any board — the `wdt` nodes visible in board `.dts` files are
 inherited SoC definitions, and the `RTCWDT` references in the TTGO board configs
 concern the ESP32 ROM bootloader's own watchdog, not something ZephCore arms.
 The only consumer of the concept is the boot breadcrumb in `main_companion.cpp`,
-which reads `RESET_WATCHDOG` out of `hwinfo_get_reset_cause()` and reports it in
-the "Restarted:" v-contact message (see [6.2.1](#621-v-contact-loopback-admin-contact)).
+which reports `RESET_WATCHDOG` in the "Restarted:" v-contact message (see
+[6.2.1](#621-v-contact-loopback-admin-contact)). It reads the cause from
+`zephcore_boot_reset_cause()` rather than from `hwinfo_get_reset_cause()`
+directly: `helpers/boot_info.c` captures the register once at POST_KERNEL on
+every role, logs it with its labels, and clears it where the platform
+implements a clear, so a later reader sees the same cause instead of a
+cleared register. nRF implements `hwinfo_clear_reset_cause()`;
+ESP32 does not, so the weak stub returns `-ENOSYS` and nothing is cleared
+there. That is harmless on ESP32, whose cause comes from `esp_reset_reason()`
+and does not accumulate across boots, but the capture is what readers should
+rely on rather than the register. Zephyr's ESP32 hwinfo driver returns 0 for
+the reasons it has no case for; `boot_info` maps those itself (USB-Serial-JTAG
+and JTAG resets, i.e. every esptool flash, to `DEBUG`; power glitch to
+`BROWNOUT`; CPU lockup; eFuse error to `HARDWARE`).
 
 Everything below is software: bounded stall detection in the layer that owns the
 state machine. Each entry names what it recovers, because several are
@@ -1257,6 +1307,6 @@ Timeouts and deadlines that are watchdogs in everything but name:
 | Stuck-DIO1 counter | `lr11xx_lora.c` and `lr20xx_lora.c` | 5 empty DIO1 cycles → hardware reset. Counting rather than timing; on the LR11xx it complements the wedge watchdog rather than replacing it. |
 | CAD timeout | `Dispatcher::checkSend()` | 4 s (~20 retry attempts) → `ERR_EVENT_CAD_TIMEOUT` + `recoverRxState()`, rather than falling through to TX. See [5.2.2](#522-cad-timeout-recovery). |
 | Chip-side TX timeout | SX126x `SetTx` deadline (`patch 0003`, "Scale the chip-side Tx timeout from airtime instead of a fixed 10 s"; airtime +25% +500 ms, floored at 10 s, clamped 262143 ms); LR2021 `TIMEOUT` IRQ handler | The chip stops the transmission when this fires, so a fixed value is a truncation, not a safeguard — at SF12/BW62.5 the old flat 10 s cut every packet from 76 bytes up. |
-| Serial partial-frame resync | `SerialCompanionTransport.c` (`FRAME_PARTIAL_TIMEOUT_MS`) | 2 s. Parser-level only — deliberately **not** a session or idle timeout; an idle-but-connected companion sits in `RX_IDLE` indefinitely. |
-| TCP send timeout | `LinuxTCPTransport.c` | Native sim only. A peer that can't accept a frame in the window is wedged → close it, rather than hang the whole queue. |
+| Serial partial-frame resync | `ZephyrCompanionUSB.cpp` (`USB_FRAME_TIMEOUT_MS`) | 2 s. Parser-level only — deliberately **not** a session or idle timeout; an idle-but-connected companion sits in `RX_IDLE` indefinitely. |
+| TCP send timeout | `TcpCompanionTransport.c` | Native Linux and WiFi companions. A peer that can't accept a frame in the window is wedged → close it, rather than hang the whole queue. |
 | Bounded RXTO wait | `patches/zephyr/0010-uarte-pm-suspend-bounded-rxto-wait.patch` | `uarte_pm_suspend()` busy-waits for RXTO with no timeout upstream. Landing in the STOPRX race with bytes in flight spins forever on the main thread and wedges the entire mesh (observed: RAK3401 1W repeater on 1.16.6, CLI answering only `-> busy`). Backstop for the GPS UART PM path in [7.3](#73-gps-adaptersgps). |

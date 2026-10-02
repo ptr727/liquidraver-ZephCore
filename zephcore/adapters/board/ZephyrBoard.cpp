@@ -3,7 +3,9 @@
  */
 
 #include "ZephyrBoard.h"
+#include "zephyr_poweroff.h"
 #include "battery_curve.h"
+#include "boot_info.h"
 #include "led_gate.h"
 #include <NodePrefs.h>   /* LEDS_RADIO_* mode values */
 #include <zephyr/kernel.h>
@@ -29,7 +31,7 @@
  * host gets a clean disconnect/re-enumerate.  Gated to exactly the boards that
  * both exhibit the defect and expose the PHY knob to fix it. */
 #if defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32) && \
-    DT_NODE_HAS_COMPAT(DT_CHOSEN(zephyr_console), espressif_esp32_usb_serial)
+	DT_NODE_HAS_COMPAT(DT_CHOSEN(zephyr_console), espressif_esp32_usb_serial)
 #include <hal/usb_serial_jtag_ll.h>
 #define ESP32_USB_SERIAL_DETACH 1
 #endif
@@ -89,9 +91,9 @@
  * companion branch wraps it in (LOG || COMPANION_USB || COMPANION_SERIAL), and
  * ZEPHCORE_COMPANION is the compile definition that identifies that branch. */
 #if !defined(CONFIG_CDC_ACM_SERIAL_INITIALIZE_AT_BOOT) && \
-    (defined(CONFIG_USB_CDC_ACM) || defined(CONFIG_USBD_CDC_ACM_CLASS))
+	(defined(CONFIG_USB_CDC_ACM) || defined(CONFIG_USBD_CDC_ACM_CLASS))
 #if !defined(ZEPHCORE_COMPANION) || defined(CONFIG_LOG) || \
-    defined(CONFIG_ZEPHCORE_COMPANION_USB) || defined(CONFIG_ZEPHCORE_COMPANION_SERIAL)
+	defined(CONFIG_ZEPHCORE_COMPANION_USB) || defined(CONFIG_ZEPHCORE_COMPANION_SERIAL)
 #include <ZephyrUSBCDC.h>
 #define ZEPHCORE_USBD_DETACH 1
 #endif
@@ -114,11 +116,11 @@ static const struct gpio_dt_spec tx_led =
  * compile out.  led1 is checked as well because ui_common.c falls back to it
  * when a board has no led0. */
 #if HAS_TX_LED && DT_NODE_EXISTS(DT_ALIAS(led0)) && \
-    DT_SAME_NODE(DT_ALIAS(led0), DT_ALIAS(lora_tx_led))
+	DT_SAME_NODE(DT_ALIAS(led0), DT_ALIAS(lora_tx_led))
 #define ZEPHCORE_LED_PIN_SHARED 1
 #elif HAS_TX_LED && !DT_NODE_EXISTS(DT_ALIAS(led0)) && \
-      DT_NODE_EXISTS(DT_ALIAS(led1)) && \
-      DT_SAME_NODE(DT_ALIAS(led1), DT_ALIAS(lora_tx_led))
+	  DT_NODE_EXISTS(DT_ALIAS(led1)) && \
+	  DT_SAME_NODE(DT_ALIAS(led1), DT_ALIAS(lora_tx_led))
 #define ZEPHCORE_LED_PIN_SHARED 1
 #else
 #define ZEPHCORE_LED_PIN_SHARED 0
@@ -128,7 +130,7 @@ static const struct gpio_dt_spec tx_led =
 LOG_MODULE_REGISTER(zephcore_board, CONFIG_ZEPHCORE_BOARD_LOG_LEVEL);
 
 #if DT_NODE_EXISTS(DT_PATH(zephyr_user)) && \
-    DT_NODE_HAS_PROP(DT_PATH(zephyr_user), io_channels)
+	DT_NODE_HAS_PROP(DT_PATH(zephyr_user), io_channels)
 #include <zephyr/drivers/adc.h>
 #include <zephyr/drivers/regulator.h>
 
@@ -216,22 +218,45 @@ static int tx_led_init(void)
 SYS_INIT(tx_led_init, APPLICATION, 90);
 #endif
 
+/* How long one battery reading serves every caller. The voltage moves over
+ * minutes; the burst it replaces costs 10 ms of divider settling plus 8 ADC
+ * samples on the caller's thread each time. */
+#define BATT_CACHE_MS 10000
+
+/* Callers are on the main thread and the UI thread. */
+static K_MUTEX_DEFINE(s_batt_lock);
+
 namespace mesh {
 
 uint16_t ZephyrBoard::getBattMilliVolts()
 {
+	k_mutex_lock(&s_batt_lock, K_FOREVER);
+	int64_t now = k_uptime_get();
+
+	if (_batt_read_ms < 0 || now - _batt_read_ms >= BATT_CACHE_MS) {
+		_batt_mv = readBattMilliVolts();
+		_batt_read_ms = now;
+	}
+	uint16_t mv = _batt_mv;
+
+	k_mutex_unlock(&s_batt_lock);
+	return mv;
+}
+
+uint16_t ZephyrBoard::readBattMilliVolts()
+{
 #if HAS_FUEL_GAUGE
 	if (device_is_ready(fuel_gauge_dev)) {
 		union fuel_gauge_prop_val val;
-		int ret = fuel_gauge_get_prop(fuel_gauge_dev, FUEL_GAUGE_VOLTAGE, &val);
+		int ret = fuel_gauge_get_prop(fuel_gauge_dev, FUEL_GAUGE_VOLTAGE_UV, &val);
 		if (ret == 0) {
-			return (uint16_t)(val.voltage / 1000);  /* µV -> mV */
+			return (uint16_t)(val.voltage_uv / 1000);  /* µV -> mV */
 		}
 		LOG_WRN("Fuel gauge voltage read failed: %d", ret);
 	}
 	return 0;
 #elif DT_NODE_EXISTS(DT_PATH(zephyr_user)) && \
-    DT_NODE_HAS_PROP(DT_PATH(zephyr_user), io_channels)
+	DT_NODE_HAS_PROP(DT_PATH(zephyr_user), io_channels)
 	if (!adc_is_ready_dt(&vbat_adc)) {
 		LOG_ERR("ADC not ready");
 		return 0;
@@ -301,9 +326,9 @@ uint8_t ZephyrBoard::getBattPercent()
 	if (device_is_ready(fuel_gauge_dev)) {
 		union fuel_gauge_prop_val val;
 		int ret = fuel_gauge_get_prop(fuel_gauge_dev,
-					      FUEL_GAUGE_RELATIVE_STATE_OF_CHARGE, &val);
+					      FUEL_GAUGE_RELATIVE_STATE_OF_CHARGE_PCT, &val);
 		if (ret == 0) {
-			return val.relative_state_of_charge;
+			return val.relative_state_of_charge_pct;
 		}
 		LOG_WRN("Fuel gauge SoC read failed: %d", ret);
 	}
@@ -315,8 +340,9 @@ uint8_t ZephyrBoard::getBattPercent()
 bool ZephyrBoard::setAdcMultiplier(float multiplier)
 {
 #if DT_NODE_EXISTS(DT_PATH(zephyr_user)) && \
-    DT_NODE_HAS_PROP(DT_PATH(zephyr_user), io_channels)
+	DT_NODE_HAS_PROP(DT_PATH(zephyr_user), io_channels)
 	_adc_multiplier_override = multiplier;
+	_batt_read_ms = -1;  /* the next reading uses it */
 	return true;
 #else
 	(void)multiplier;
@@ -327,7 +353,7 @@ bool ZephyrBoard::setAdcMultiplier(float multiplier)
 float ZephyrBoard::getAdcMultiplier() const
 {
 #if DT_NODE_EXISTS(DT_PATH(zephyr_user)) && \
-    DT_NODE_HAS_PROP(DT_PATH(zephyr_user), io_channels)
+	DT_NODE_HAS_PROP(DT_PATH(zephyr_user), io_channels)
 	return (_adc_multiplier_override != 0.0f)
 		? _adc_multiplier_override
 		: (float)VBAT_MV_MULTIPLIER;
@@ -418,6 +444,7 @@ void ZephyrBoard::onPacketReceived()
 
 void ZephyrBoard::reboot()
 {
+	zephcore_persist_before_off();
 	k_msleep(50);  /* Let UART/USB flush */
 #ifdef ZEPHCORE_USBD_DETACH
 	/* USB device stack (CDC ACM): detach so the host sees an unplug. */
@@ -433,8 +460,16 @@ void ZephyrBoard::reboot()
 	sys_reboot(SYS_REBOOT_COLD);
 }
 
+void ZephyrBoard::powerOff()
+{
+	zephcore_shutdown_reason_save(ZC_SHUTDOWN_USER);
+	k_msleep(50);  /* Let UART/USB flush */
+	zephcore_power_off();
+}
+
 void ZephyrBoard::rebootToBootloader()
 {
+	zephcore_persist_before_off();
 #ifdef NRF52_GPREGRET
 	/* Write magic value to GPREGRET0 - enter UF2 bootloader mode.
 	 * UF2 supports both drag-and-drop (.uf2) and serial DFU (nrfutil). */
@@ -459,6 +494,16 @@ void ZephyrBoard::rebootToBootloader()
 	/* Clean USB disconnect before the soft reset — same reason as reboot(). */
 	usb_serial_jtag_ll_phy_enable_pad(false);
 	k_msleep(100);
+#ifdef ESP32_FORCE_DOWNLOAD_BOOT
+	/* ...but put the pad back before resetting into the ROM.  The pad-enable
+	 * bit survives a software reset, and unlike the app the ROM download mode
+	 * never re-enables it, so leaving it off keeps USB-Serial-JTAG off the bus:
+	 * the host sees the port die and only a power cycle brings it back.  That
+	 * was `start dfu` on every S3 build whose console is USJ (repeater,
+	 * observer, room server, debug).  The 100 ms low above still gives the
+	 * host its disconnect; the ROM then enumerates as 303a:1001. */
+	usb_serial_jtag_ll_phy_enable_pad(true);
+#endif
 #endif
 #ifdef ESP32_FORCE_DOWNLOAD_BOOT
 	/* Hand the internal USB PHY back to USB-Serial-JTAG, so the ROM download
@@ -480,6 +525,7 @@ bool ZephyrBoard::startOTAUpdate(const char *id, char reply[])
 {
 #ifdef NRF52_GPREGRET
 	/* Write magic value to GPREGRET0 - enter BLE OTA DFU mode */
+	zephcore_persist_before_off();
 	nrf_power_gpregret_set(NRF_POWER, 0, BOOTLOADER_DFU_OTA_MAGIC);
 	sprintf(reply, "OK - rebooting to BLE DFU (name: %s)", id ? id : "DfuTarg");
 	k_msleep(50);  /* Let UART/USB flush */
@@ -537,6 +583,50 @@ uint8_t ZephyrBoard::getStartupReason() const
 	return BD_STARTUP_NORMAL;
 }
 
+uint32_t ZephyrBoard::getResetReason() const
+{
+	uint32_t cause = 0;
+
+	return zephcore_boot_reset_cause(&cause) ? cause : 0;
+}
+
+/* This boot's reset cause as hwinfo labels ("PIN", "SOFTWARE", ...) where
+ * upstream has one phrase, plus the fatal error when the last run crashed.
+ * reason is always getResetReason() (all callers pass it), so the labels come
+ * straight from boot_info. */
+const char *ZephyrBoard::getResetReasonString(uint32_t reason)
+{
+	static char buf[112];
+
+	ARG_UNUSED(reason);
+	int n = zephcore_boot_reset_cause_str(buf, sizeof(buf), false);
+
+	if (n > 0) {
+		memmove(buf, buf + 1, (size_t)n);  /* drop the leading space */
+		n--;
+	} else {
+		n = snprintf(buf, sizeof(buf), "Unknown");
+	}
+
+	struct zephcore_crash crash;
+
+	if (zephcore_boot_crash(&crash) && (size_t)n < sizeof(buf)) {
+		snprintf(buf + n, sizeof(buf) - (size_t)n, " (crash %u in %s, pc 0x%08x)",
+			 crash.reason, crash.thread, crash.pc);
+	}
+	return buf;
+}
+
+uint8_t ZephyrBoard::getShutdownReason() const
+{
+	return zephcore_shutdown_reason();
+}
+
+const char *ZephyrBoard::getShutdownReasonString(uint8_t reason)
+{
+	return zephcore_shutdown_reason_str(reason);
+}
+
 bool ZephyrBoard::isExternalPowered()
 {
 #if defined(CONFIG_SOC_SERIES_NRF52)
@@ -549,6 +639,16 @@ bool ZephyrBoard::isExternalPowered()
 	 * so low-battery auto-shutdown is never inhibited. */
 	return false;
 #endif
+}
+
+bool ZephyrBoard::hasUsbPowerDetect() const
+{
+	return IS_ENABLED(CONFIG_SOC_SERIES_NRF52);
+}
+
+bool ZephyrBoard::isUsbPowered()
+{
+	return hasUsbPowerDetect() && isExternalPowered();
 }
 
 } /* namespace mesh */

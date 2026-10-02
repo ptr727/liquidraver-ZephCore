@@ -17,22 +17,13 @@
 #include "display.h"
 #endif
 
-#include <ZephyrSensorManager.h>   /* gps_power_off_for_shutdown */
-#include "ui_mesh_actions.h"        /* mesh_disable_power_regulators (weak) */
+#include <zephyr_poweroff.h>
 #include "led_gate.h"               /* shared with the LoRa TX LED */
 
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/kernel.h>
 #include <string.h>
-
-#ifdef CONFIG_POWEROFF
-#include <zephyr/sys/poweroff.h>
-#endif
-
-#if defined(CONFIG_SOC_FAMILY_NORDIC_NRF)
-#include <hal/nrf_gpio.h>
-#endif
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(ui_led, CONFIG_ZEPHCORE_BOARD_LOG_LEVEL);
@@ -110,7 +101,7 @@ static const struct gpio_dt_spec s_heartbeat_led =
 /* Second LED for unread-message indication. Repeaters use led1 for LoRa TX
  * (via lora-tx-led alias) — no offline queue, so this is companion-only. */
 #if HAS_HEARTBEAT_LED && DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios) && \
-    DT_NODE_HAS_PROP(DT_ALIAS(led1), gpios) && !defined(ZEPHCORE_REPEATER)
+	DT_NODE_HAS_PROP(DT_ALIAS(led1), gpios) && !defined(ZEPHCORE_REPEATER)
 static const struct gpio_dt_spec s_msg_led =
 	GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
 #define HAS_MSG_LED 1
@@ -330,18 +321,15 @@ void ui_led_flash_shutdown(void)
 #define UI_BATT_REFRESH_MS  30000
 
 static uint16_t (*s_batt_provider)(void);
+/* The board's own percentage: its discharge curve, or the fuel gauge. */
+static uint8_t (*s_batt_pct_provider)(void);
 static uint32_t s_batt_last_read_ms;
 static bool s_batt_ever_read;
-static bool (*s_power_source_provider)(void);
 
-void ui_set_battery_provider(uint16_t (*provider)(void))
+void ui_set_battery_provider(uint16_t (*mv)(void), uint8_t (*pct)(void))
 {
-	s_batt_provider = provider;
-}
-
-void ui_set_power_source_provider(bool (*provider)(void))
-{
-	s_power_source_provider = provider;
+	s_batt_provider = mv;
+	s_batt_pct_provider = pct;
 }
 
 void ui_refresh_battery(void)
@@ -353,7 +341,8 @@ void ui_refresh_battery(void)
 	if (s_batt_ever_read && (now - s_batt_last_read_ms) < UI_BATT_REFRESH_MS) {
 		return;
 	}
-	ui_set_battery(s_batt_provider(), 0);
+	uint16_t mv = s_batt_provider();
+	ui_set_battery(mv, (mv && s_batt_pct_provider) ? s_batt_pct_provider() : 0);
 	s_batt_last_read_ms = k_uptime_get_32();
 	s_batt_ever_read = true;
 }
@@ -367,171 +356,24 @@ void ui_invalidate_battery_cache(void)
 	s_batt_last_read_ms = 0;
 }
 
-/* ========== System OFF preparation ==========
- * Shared by both UI variants. Caller is responsible for any shutdown chime
- * and the final sys_poweroff() call; this just leaves the SoC + peripherals
- * in the lowest-power state with a wakeup source armed.
- *
- * On nRF52 the SoC enters System OFF (~1 µA) but GPIO output latches and
- * SENSE bits persist across the transition — so we must explicitly:
- *   - hold every power-enable GPIO LOW so external chips don't keep drawing
- *   - hold the LoRa radio in HW reset (its internal duty cycle would
- *     otherwise keep cycling autonomously, drawing mA)
- *   - configure SENSE on sw0 so a button press wakes the chip (the nRF GPIO
- *     driver doesn't honour the DT wakeup-source property, so the dtsi
- *     marker is inert without this)
- *
- * Non-nRF platforms skip the SENSE block; they rely on Zephyr's wakeup-source
- * DT property which is honoured by their respective GPIO drivers.
- *
- * Boards with a soft-power rail (the MCU latches its own supply on) add a
- * "zephcore,poweroff-gpios" node; its pins are released last, which cuts the
- * rail outright instead of leaving it latched through System OFF. Boards
- * without that node are unaffected — step 6 compiles to nothing.
- */
-void ui_prepare_for_system_off(void)
+/* ========== Power-off: the UI's part ==========
+ * zephcore_power_off() (adapters/board/zephyr_poweroff.c) runs this first,
+ * then powers the board down. */
+void ui_before_power_off(void)
 {
-	/* 1. Stop heartbeat LED cycle (cancels both works). */
+	/* Stop heartbeat LED cycle (cancels both works). */
 	ui_set_heartbeat_led(false);
 
-	/* 2. Display off — content stays visible on EPD, blanks on OLED. */
+	/* Display off — content stays visible on EPD, blanks on OLED. */
 #ifdef CONFIG_ZEPHCORE_UI_DISPLAY
 	mc_display_off();
 #endif
-
-	/* 3. Drive power-enable GPIOs LOW so peripherals don't keep drawing.
-	 * Do NOT touch BLE here — that corrupts controller state and prevents
-	 * clean reboot on wake. */
-	gps_power_off_for_shutdown();
-	mesh_disable_power_regulators();   /* weak-stubbed on non-companion roles */
-
-	/* 4. Hold LoRa radio in HW reset.
-	 * SX126x/LR11xx duty-cycle mode would otherwise keep the radio cycling
-	 * autonomously (mA) while the SoC is in System OFF.  nRF52 output
-	 * latches persist across System OFF → chip stays in reset (~0 µA). */
-#if DT_NODE_EXISTS(DT_ALIAS(lora0)) && DT_NODE_HAS_PROP(DT_ALIAS(lora0), reset_gpios)
-	{
-		static const struct gpio_dt_spec lora_reset =
-			GPIO_DT_SPEC_GET(DT_ALIAS(lora0), reset_gpios);
-		gpio_pin_configure_dt(&lora_reset, GPIO_OUTPUT_ACTIVE);
-	}
-#endif
-
-	/* 5. Configure GPIO SENSE for sw0 button wakeup, after waiting for the
-	 * user to release any held button (otherwise DETECT is already asserted
-	 * when we enter System OFF and the chip never sleeps cleanly).
-	 * nRF only — other platforms rely on the DT wakeup-source property. */
-#if defined(CONFIG_SOC_FAMILY_NORDIC_NRF) && DT_NODE_EXISTS(DT_ALIAS(sw0))
-	{
-#define _SW0_NODE  DT_ALIAS(sw0)
-#define _SW0_PORT  DT_PROP(DT_GPIO_CTLR(_SW0_NODE, gpios), port)
-#define _SW0_PIN   DT_GPIO_PIN(_SW0_NODE, gpios)
-#define _SW0_FLAGS DT_GPIO_FLAGS(_SW0_NODE, gpios)
-
-		static const struct gpio_dt_spec sw0 =
-			GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
-		gpio_pin_configure_dt(&sw0, GPIO_INPUT);
-
-		int64_t deadline = k_uptime_get() + 5000;
-		while (gpio_pin_get_dt(&sw0) && k_uptime_get() < deadline) {
-			k_sleep(K_MSEC(10));
-		}
-
-		nrf_gpio_cfg_sense_input(
-			NRF_GPIO_PIN_MAP(_SW0_PORT, _SW0_PIN),
-			(_SW0_FLAGS & GPIO_PULL_UP)   ? NRF_GPIO_PIN_PULLUP   :
-			(_SW0_FLAGS & GPIO_PULL_DOWN) ? NRF_GPIO_PIN_PULLDOWN :
-						       NRF_GPIO_PIN_NOPULL,
-			(_SW0_FLAGS & GPIO_ACTIVE_LOW) ? NRF_GPIO_PIN_SENSE_LOW
-						       : NRF_GPIO_PIN_SENSE_HIGH);
-#undef _SW0_NODE
-#undef _SW0_PORT
-#undef _SW0_PIN
-#undef _SW0_FLAGS
-	}
-#endif /* CONFIG_SOC_FAMILY_NORDIC_NRF && sw0 */
-
-	/* 6. Release the board power latch — must be dead last.
-	 *
-	 * Only present on soft-power boards (see zephcore,poweroff-gpios). The
-	 * rail is cut here rather than in step 3 because the pins are ordered
-	 * loads-first/latch-last, and because step 5 must have observed the
-	 * button release first: on these boards the button is also the power-on
-	 * input, so dropping the latch while it is still held would let the I/O
-	 * controller re-latch the rail immediately.
-	 *
-	 * On battery this does not return — the supply is gone mid-loop, which
-	 * is the intended outcome. On USB the rail may be held up externally, in
-	 * which case we simply fall through to the caller's sys_poweroff() and
-	 * land in System OFF as before. */
-#if DT_HAS_COMPAT_STATUS_OKAY(zephcore_poweroff_gpios)
-	{
-#define _PWROFF_NODE DT_COMPAT_GET_ANY_STATUS_OKAY(zephcore_poweroff_gpios)
-		static const struct gpio_dt_spec poweroff_gpios[] = {
-			DT_FOREACH_PROP_ELEM_SEP(_PWROFF_NODE, gpios,
-						 GPIO_DT_SPEC_GET_BY_IDX, (,))
-		};
-
-		for (size_t i = 0; i < ARRAY_SIZE(poweroff_gpios); i++) {
-			gpio_pin_configure_dt(&poweroff_gpios[i], GPIO_OUTPUT_INACTIVE);
-		}
-#undef _PWROFF_NODE
-	}
-#endif
 }
 
-/* ========== Low-battery auto-shutdown ==========
- * Companion only. Driven off the existing housekeeping tick — self-throttled,
- * so there is no dedicated poll. Disabled entirely (compiled out) unless a
- * board sets CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS > 0. */
-#if defined(CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS) && \
-	CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS > 0
-
-/* How often we actually sample the ADC for the shutdown check. The caller
- * fires every housekeeping tick (~5 s); this gate keeps the divider from
- * being energised more than necessary while still catching a sagging cell
- * well before it collapses. */
-#define UI_AUTO_SHUTDOWN_CHECK_MS  30000
-
-/* Consecutive below-threshold readings required before shutdown.
- * 3 hits × 30 s = 90 s confirm window — a single TX-induced sag that
- * lands on a check window won't trigger a false shutdown. */
-#define UI_AUTO_SHUTDOWN_CONFIRM_COUNT  3
-
-/* Runtime threshold (mV); 0 disables. Seeded from the Kconfig default, then
- * overridden at boot from prefs and live via the CLI (ui_set_auto_shutdown_mv). */
-static uint16_t s_auto_shutdown_mv = CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS;
-static uint8_t  s_low_count;
-
-void ui_set_auto_shutdown_mv(uint16_t mv)
-{
-	s_auto_shutdown_mv = mv;
-}
-
-/* Pre-shutdown hook + deferred power-off.  When the hook reports an app is
- * connected (live notice queued), the power-off is deferred by a grace period
- * on a work item so the main loop keeps running and delivers the message. */
-static ui_shutdown_fn s_shutdown_hook;
-static bool s_shutting_down;
-
-static void shutdown_work_fn(struct k_work *work)
-{
-	ARG_UNUSED(work);
-#ifdef CONFIG_POWEROFF
-	ui_prepare_for_system_off();
-	sys_poweroff();
-	CODE_UNREACHABLE;
-#endif
-}
-static K_WORK_DELAYABLE_DEFINE(s_shutdown_work, shutdown_work_fn);
-
-void ui_set_shutdown_hook(ui_shutdown_fn fn)
-{
-	s_shutdown_hook = fn;
-}
-
+/* ========== Low-battery warning screen ==========
+ * The policy itself is app/PowerPolicy.cpp. */
 #ifdef CONFIG_ZEPHCORE_UI_DISPLAY
-static void auto_shutdown_warn_screen(bool hold)
+void ui_show_low_battery(bool hold)
 {
 	/* Wake the panel (OLED may be blanked by auto-off; EPD is always
 	 * visible). Centre two lines; the message persists on e-paper after
@@ -565,87 +407,12 @@ static void auto_shutdown_warn_screen(bool hold)
 		k_sleep(K_MSEC(3000));
 	}
 }
-#endif /* CONFIG_ZEPHCORE_UI_DISPLAY */
-
-void ui_auto_shutdown_check(void)
-{
-	if (s_shutting_down) {
-		return;  /* power-off already committed (deferred grace running) */
-	}
-	if (!s_batt_provider || s_auto_shutdown_mv == 0) {
-		return;  /* no battery provider, or runtime-disabled */
-	}
-
-	uint32_t now = k_uptime_get_32();
-	static uint32_t next_check_ms;   /* 0 at boot → first tick samples */
-	if (next_check_ms != 0 && (now - next_check_ms) < UI_AUTO_SHUTDOWN_CHECK_MS) {
-		return;
-	}
-	next_check_ms = now;
-
-	uint16_t mv = s_batt_provider();
-	if (mv == 0 || mv >= s_auto_shutdown_mv) {
-		s_low_count = 0;
-		return;  /* no battery hardware / reading, or healthy */
-	}
-
-	/* Don't power off while charging or USB-powered — the reading is the
-	 * cell, not the supply, and yanking power on a bench cable is annoying. */
-	if (s_power_source_provider && s_power_source_provider()) {
-		LOG_INF("auto-shutdown: %u mV below threshold but externally powered", mv);
-		s_low_count = 0;
-		return;
-	}
-
-	s_low_count++;
-	LOG_WRN("auto-shutdown: battery %u mV < %u mV (%u/%u)",
-		mv, s_auto_shutdown_mv, s_low_count, UI_AUTO_SHUTDOWN_CONFIRM_COUNT);
-	if (s_low_count < UI_AUTO_SHUTDOWN_CONFIRM_COUNT) {
-		return;
-	}
-
-	LOG_WRN("auto-shutdown: confirmed — powering off");
-
-	/* Let the app layer report the shutdown. If it queued a live notice to a
-	 * connected app, it returns true and we defer the power-off by a short
-	 * grace so the notify→fetch→send round-trip can finish; otherwise it
-	 * persisted the reason to flash (reported on next boot) and we power off
-	 * now. */
-	bool grace = s_shutdown_hook ? s_shutdown_hook(UI_SHUTDOWN_LOW_BATTERY)
-				     : false;
-	s_shutting_down = true;
-
-#ifdef CONFIG_POWEROFF
-	if (grace) {
-#ifdef CONFIG_ZEPHCORE_UI_DISPLAY
-		auto_shutdown_warn_screen(false);  /* draw, don't block the loop */
-#endif
-		k_work_schedule(&s_shutdown_work, K_MSEC(UI_SHUTDOWN_GRACE_MS));
-		return;  /* main loop keeps running → delivers the notice */
-	}
-
-#ifdef CONFIG_ZEPHCORE_UI_DISPLAY
-	auto_shutdown_warn_screen(true);  /* nothing to deliver — 3 s OLED hold */
-#endif
-	ui_prepare_for_system_off();
-	sys_poweroff();
-	CODE_UNREACHABLE;
 #else
-	(void)grace;
-#ifdef CONFIG_ZEPHCORE_UI_DISPLAY
-	auto_shutdown_warn_screen(true);
-#endif
-	LOG_WRN("auto-shutdown: CONFIG_POWEROFF not enabled — cannot power off");
-#endif
+void ui_show_low_battery(bool hold)
+{
+	ARG_UNUSED(hold);
 }
-
-#else  /* feature disabled (non-nRF52 / threshold default 0) */
-
-void ui_set_auto_shutdown_mv(uint16_t mv) { (void)mv; }
-void ui_auto_shutdown_check(void) { }
-void ui_set_shutdown_hook(ui_shutdown_fn fn) { (void)fn; }
-
-#endif /* CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS > 0 */
+#endif
 
 /* ========== Shared splash logo ==========
  * 128×13 ZephCore wordmark, MSB-first row-major (Adafruit XBM/drawBitmap

@@ -3,7 +3,7 @@
  * Heltec WiFi LoRa 32 V4-R8 — ZephCore procpu DTS
  *
  * Hardware:
- *   MCU:    ESP32-S3 (16 MB flash, 2 MB QSPI PSRAM)
+ *   MCU:    ESP32-S3R8 (16 MB flash, 8 MB octal PSRAM)
  *   Radio:  SX1262 on SPI2, KCT8103L external PA/FEM
  *   OLED:   SSD1306 128x64 on I2C0
  *   Button: GPIO0
@@ -21,10 +21,13 @@
  *   Detection: GPIO2 default pull differs (GC1109: pull-down, KCT8103L: pull-up)
  *   (See MeshCore PR#1867, Heltec schematic HTIT-WB32LAF_V4.3)
  *
- * All other hardware is identical to V4.2:
- *   GPIO7  = VFEM_Ctrl LDO power (active-HIGH, always-on)
- *   GPIO2  = KCT8103L CSD (chip enable, active-HIGH)
- *   GPIO5  = KCT8103L CTX (TX/RX select: HIGH=TX, LOW=RX/LNA)  ← V4.3 change
+ * Pins the PSRAM reshuffle does not move. Origin is noted per line, because
+ * this board takes its FEM from V4.3 and not every line here exists on V4.2:
+ *   GPIO7  = VFEM_Ctrl LDO power (active-HIGH, always-on)  — V4.2 onward
+ *   GPIO2  = FEM CSD (chip enable, active-HIGH)            — V4.2 onward
+ *   GPIO5  = KCT8103L CTX (TX/RX select: HIGH=TX, LOW=RX/LNA) — V4.3 onward.
+ *            V4.2 has NO CTX: its GC1109 is driven by TX_EN on GPIO46. Do not
+ *            carry this line back to heltec_wifi_lora32_v4.
  *
  * LoRa SPI2:  SCLK=9, MOSI=10, MISO=11, NSS=8
  * LoRa ctrl:  DIO1=14, BUSY=13, RESET=12
@@ -34,7 +37,7 @@
 
 /dts-v1/;
 
-#include <espressif/esp32s3/esp32s3_wroom_n16r8.dtsi>
+#include <espressif/esp32s3/esp32s3.dtsi>
 #include "heltec_wifi_lora32_v4_r8-pinctrl.dtsi"
 #include <zephyr/dt-bindings/pwm/pwm.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
@@ -42,6 +45,18 @@
 #include <zephyr/dt-bindings/adc/adc.h>
 #include <zephyr/dt-bindings/gpio/espressif-esp32-gpio.h>
 #include <espressif/partitions_0x0_amp_16M.dtsi>
+
+/* Module flash/PSRAM, declared by the board since Zephyr 4.5 removed the
+ * per-module dtsi (esp32s3_wroom_n16r8.dtsi). The R8 is the 8 MB octal part,
+ * which is what distinguishes it from the V4/V4.3 S3R2 at 2 MB quad. */
+&flash0 {
+	reg = <0x0 DT_SIZE_M(16)>;
+	ranges = <0x0 0x0 DT_SIZE_M(16)>;
+};
+
+&psram0 {
+	size = <DT_SIZE_M(8)>;
+};
 
 / {
 	model = "Heltec WiFi LoRa 32 V4-R8 PROCPU";
@@ -109,21 +124,23 @@
 	vext_enable: vext-enable {
 		compatible = "regulator-fixed";
 		regulator-name = "vext";
-		enable-gpios = <&gpio1 8 GPIO_ACTIVE_LOW>;  /* GPIO40 = gpio1 pin 8 */
+		enable-gpios = <&gpio1 8 (GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;  /* GPIO40 = gpio1 pin 8 */
 		regulator-boot-on;
 		regulator-always-on;
 	};
 
-	/* No adc_ctrl power-domain node: it would claim GPIO37 (gpio1 pin 5) with
-	 * the opposite polarity and fight the vbat_enable regulator in board.overlay,
-	 * which is the actual per-read driver for the ADC divider enable. */
+	/* No adc_ctrl power-domain node: ADC_Ctrl is removed on the R8 and GPIO37
+	 * (gpio1 pin 5) is an octal-PSRAM pad, which must not be driven at all.
+	 * There is no vbat-enable regulator either -- the divider is permanently
+	 * connected, so ZephyrBoard's regulator lookup degrades to NULL by
+	 * design. See board.overlay's battery-ADC block. */
 
 	/* FEM LDO power supply — GPIO7 powers the KCT8103L LDO.
 	 * Must be HIGH before any radio operation. Keep always-on. */
 	fem_power: fem-power {
 		compatible = "regulator-fixed";
 		regulator-name = "fem-power";
-		enable-gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;  /* VFEM_Ctrl = GPIO7 */
+		enable-gpios = <&gpio0 7 (GPIO_ACTIVE_HIGH | ESP32_GPIO_SLEEP_HOLD_EN)>;  /* VFEM_Ctrl = GPIO7, held across light sleep */
 		regulator-boot-on;
 		regulator-always-on;
 	};
@@ -143,8 +160,14 @@
  * adc0 is unit 1; the node labelled adc1 is unit 2 (= GPIO11 = SX1262 MISO).
  * The channel@0 config is required — without it adc_channel_setup_dt() fails and
  * getBattMilliVolts() returns 0 before ever performing a conversion. ADC_GAIN_1
- * (0 dB) with ADC_REF_INTERNAL (~1100 mV); the 100K/390K divider output for a
- * 3.0-4.2 V cell sits well inside range. */
+ * (0 dB) with ADC_REF_INTERNAL; the 390K/100K divider output for a 3.0-4.2 V
+ * cell sits well inside range.
+ *
+ * The SoC's true 0 dB span does not enter the battery maths: Zephyr's
+ * adc_esp32 driver calibrates the hardware raw and then re-projects it onto a
+ * fixed 1100 mV / 4095 scale before the application sees it, so the value
+ * board.overlay's vbat-mv-multiplier scales is already on that scale whatever
+ * the silicon does. That file owns the number and states its derivation. */
 &adc0 {
 	status = "okay";
 	#address-cells = <1>;
@@ -180,7 +203,6 @@
 	status = "okay";
 };
 
-/* Reduce CPU clock from 240 MHz to 160 MHz — saves power, HAL minimum */
 &ledc0 {
 	pinctrl-0 = <&ledc0_default>;
 	pinctrl-names = "default";
@@ -225,12 +247,16 @@
 	pinctrl-0 = <&spim2_default>;
 	pinctrl-names = "default";
 
-	cs-gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;  /* NSS = GPIO8 */
+	/* NSS held across light sleep (boards/common/pm_esp32.overlay): an
+	 * isolated, floating chip-select lets the sleeping SX1262 clock garbage
+	 * into its retention RAM.  Inert when CONFIG_PM=n. */
+	cs-gpios = <&gpio0 8 (GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;  /* NSS = GPIO8 */
 
 	lora0: modem@0 {
 		compatible = "semtech,sx1262";
 		reg = <0>;
-		reset-gpios   = <&gpio0 12 (GPIO_OPEN_DRAIN | GPIO_ACTIVE_LOW)>;  /* RESET = GPIO12 */
+		reset-gpios   = <&gpio0 12 (GPIO_OPEN_DRAIN | GPIO_ACTIVE_LOW |
+					 ESP32_GPIO_SLEEP_HOLD_EN)>;  /* RESET = GPIO12 */
 		busy-gpios    = <&gpio0 13 GPIO_ACTIVE_HIGH>;                      /* BUSY  = GPIO13 */
 		dio1-gpios    = <&gpio0 14 GPIO_ACTIVE_HIGH>;                      /* DIO1  = GPIO14 */
 
@@ -245,15 +271,15 @@
 		 * off` gate CSD instead in 1.17.2, shutting the FEM down and taking
 		 * the receive path with it (~69 dB, measured). */
 		/*
-		 * ESP32_GPIO_SLEEP_HOLD_EN on both: light sleep powers down
-		 * RTC_PERIPH (see boards/common/pm_esp32.overlay for the full
-		 * chain), and GPIO2/GPIO5 are RTC-capable pads (0-21), so their
-		 * state is not retained across a sleep unless explicitly held.
-		 * These two lines are the FEM's entire control surface — CSD low
-		 * disables the PA and the LNA with it, CTX high bypasses the LNA —
-		 * so losing them means transmitting through a bypassed PA, tens of
-		 * dB down, with RX sensitivity gone too, while the node otherwise
-		 * looks healthy and keeps relaying.
+		 * ESP32_GPIO_SLEEP_HOLD_EN on both: light sleep switches every pad
+		 * that is not held to an isolated sleep configuration (input and
+		 * output off, no pulls), so these lines float for the length of
+		 * each sleep (boards/common/pm_esp32.overlay).  They are the FEM's
+		 * entire control surface — CSD low disables the PA and the LNA with
+		 * it, CTX high bypasses the LNA — and the radio keeps receiving
+		 * through the sleep, so a floating pair means RX without its LNA
+		 * and TX through a bypassed PA, tens of dB down, while the node
+		 * otherwise looks healthy and keeps relaying.
 		 * The flag is ignored when CONFIG_PM=n, so this is inert on
 		 * builds that never light-sleep.
 		 */
