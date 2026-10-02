@@ -116,6 +116,10 @@ void sink_line(Sink *s, const char *fmt, ...)
 	if (w < 0) {
 		return;
 	}
+	if ((size_t)w >= sizeof(line)) {
+		/* Longer than the render buffer: mark the cut, as below. */
+		memcpy(line + sizeof(line) - 4, "...", 3);
+	}
 
 	size_t need = strlen(line) + (s->len ? 1 : 0);
 	if (s->len == 0 && need >= s->cap) {
