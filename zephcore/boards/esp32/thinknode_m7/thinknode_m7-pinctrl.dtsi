@@ -40,8 +40,8 @@
 		};
 	};
 
-	/* I2C0 — no device fitted on the tested unit; the RTC socket is
-	 * probed by autodiscovery. */
+	/* I2C0 — no device fitted on the tested unit, and none declared, so
+	 * nothing probes this bus at boot. */
 	i2c0_default: i2c0_default {
 		group1 {
 			pinmux = <I2C0_SDA_GPIO17>,
