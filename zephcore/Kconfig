@@ -489,7 +489,8 @@ config ZEPHCORE_COMPANION_ETHERNET
 	select ZEPHCORE_TRANSPORT_TCP
 	help
 	  Bring up the wired interface, take a DHCP lease, and serve the
-	  companion protocol over TCP on ZEPHCORE_TCP_PORT, beside BLE and USB:
+	  companion protocol over TCP on ZEPHCORE_TCP_PORT, beside the build's
+	  other companion transports (BLE, USB or UART, where enabled):
 	  every connected transport is served (MultiSerialInterface).
 
 	  Turned on by boards/common/ethernet_companion.conf, which CMake adds
@@ -512,10 +513,9 @@ config ZEPHCORE_COMPANION_ETHERNET_STABLE_MAC
 	  address is not stable across a power cycle, so a DHCP reservation
 	  stops matching and the node moves.
 
-	  ESP32 only. There the device ID is the factory efuse base MAC, and
-	  the Ethernet address is derived from it the way ESP-IDF derives its
-	  own. On other SoCs the device ID is a serial number, which would
-	  make an arbitrary and possibly colliding address.
+	  ESP32 only: esp_read_mac() is an ESP-IDF API, which derives the
+	  address from the factory efuse base MAC under the configured
+	  universal-address scheme.
 
 endmenu # Companion TCP Transport
 

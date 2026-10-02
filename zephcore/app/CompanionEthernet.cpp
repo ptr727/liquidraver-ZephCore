@@ -111,8 +111,8 @@ static void set_stable_mac(struct net_if *iface)
 		int down_rc = net_if_down(iface);
 
 		if (down_rc < 0) {
-			/* Bringing it back up below would return -EALREADY and
-			 * look like a failure that never happened. */
+			/* Still up, so the MAC set would only be refused with
+			 * -EACCES. */
 			LOG_WRN("Interface would not go down (%d), MAC left alone", down_rc);
 			return;
 		}

@@ -1,6 +1,6 @@
 # Elecrow ThinkNode M7
 
-ESP32-S3 bare die (8 MB flash QIO, 8 MB OPI PSRAM) with a Semtech LR1110 radio and
+ESP32-S3 bare die (8 MB flash, run in DIO mode; 8 MB OPI PSRAM) with a Semtech LR1110 radio and
 a WCH CH390 SPI Ethernet controller, optionally powered over PoE. No display, no
 GNSS, no buzzer, no battery and no SD card.
 
@@ -97,8 +97,8 @@ On this board it does not matter, and that is measured rather than assumed.
 efuse and the GPIO45 strap is ignored. Re-read the efuse before assuming the
 same of another unit.
 
-GPIO3 and GPIO46 drive the two LEDs. The gpio-leds driver runs at POST_KERNEL,
-long after the strapping latch, so this is safe.
+GPIO3 and GPIO46 drive the two LEDs. No LED driver is built; the application
+configures them at APPLICATION init, long after the strapping latch, so this is safe.
 
 ## Button
 

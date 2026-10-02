@@ -863,7 +863,7 @@ frame (a reply to one app also reaches the other).
 
 - **`adapters/ble/ZephyrBLE.cpp`** (+ `ble_gatt_layout.cpp`, `ble_dfu.cpp`): BLE NUS
 - **`adapters/usb/ZephyrCompanionUSB.cpp`**: USB CDC-ACM, or a plain UART (`zephcore,companion-uart` chosen node; the only link on the Bluetooth-less LoRa-E5), with the text CLI
-- **`adapters/transport/TcpCompanionTransport.c`**: TCP (port 5000, MeshCore `SerialWifiInterface` framing) on native Linux and on WiFi companions (`app/CompanionWifi.cpp`, `capabilities: wifi: true`)
+- **`adapters/transport/TcpCompanionTransport.c`**: TCP (port 5000, MeshCore `SerialWifiInterface` framing) on native Linux, on WiFi companions (`app/CompanionWifi.cpp`, `capabilities: wifi: true`) and on Ethernet companions (`app/CompanionEthernet.cpp`, `capabilities: ethernet: true`); both set the node name as the DHCP hostname through `helpers/net_hostname_label.c`
 - **`adapters/transport/frame_txq.c`**: the TX queue BLE and TCP share (congestion, overflow slot, lossless replies)
 
 ---

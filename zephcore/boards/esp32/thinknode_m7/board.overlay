@@ -26,8 +26,9 @@
 		compatible = "gpio-leds";
 
 		/* Both LEDs are wired active low. GPIO3 and GPIO46 are strapping
-		 * pins, so nothing may drive them before the strapping latch;
-		 * the gpio-leds driver runs at POST_KERNEL, well after it. */
+		 * pins, so nothing may drive them before the strapping latch.
+		 * This node only describes them: no LED driver is built, and the
+		 * application configures them at APPLICATION init, well after. */
 		status_led: led_0 {
 			gpios = <&gpio0 3 GPIO_ACTIVE_LOW>;
 			label = "Status";

@@ -2,7 +2,8 @@
  * SPDX-License-Identifier: MIT
  * Ethernet companion (CONFIG_ZEPHCORE_COMPANION_ETHERNET): bring up the wired
  * interface so the app can reach the node over TCP (TcpCompanionTransport, one
- * more interface beside BLE and USB), and the read-only eth.* CLI.
+ * more interface beside the build's other companion transports), and the
+ * read-only eth.* CLI.
  */
 
 #pragma once

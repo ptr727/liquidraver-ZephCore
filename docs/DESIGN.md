@@ -108,7 +108,7 @@ flowchart LR
 | Radio | SX126x family (default), LR1110, LR2021, SX127x | devicetree / board conf |
 | Role | companion (default), repeater, room server, observer | user `EXTRA_CONF_FILE` |
 | UI | none, button UI, joystick/keypad UI (companion) | board Kconfig select |
-| Features | debug, WiFi companion, WiFi OTA, uplink, packet logging, PM | user confs; some auto-added |
+| Features | debug, WiFi companion, Ethernet companion, no BLE, WiFi OTA, uplink, packet logging, PM | user confs; some auto-added |
 
 The board list is one manifest per board (`zephcore.yml`), read by `build.sh`, the provider catalog and
 `docs/supported_boards.md`.
@@ -116,7 +116,8 @@ The board list is one manifest per board (`zephcore.yml`), read by `build.sh`, t
 **Rules**
 - R4.1 A board directory declares hardware only (pins, peripherals, partitions, identity), never role policy.
 - R4.2 CMake auto-includes a conf only where the combination is otherwise broken (repeater → WiFi OTA on
-  S3/C-series; S3 companion → native USB; WiFi-capable companion → WiFi companion).
+  S3/C-series; S3 companion → native USB; WiFi-capable companion → WiFi companion; Ethernet-capable
+  companion → Ethernet companion).
 - R4.3 Later layers override earlier ones, for Kconfig and devicetree alike
   ([ADR 0003](adr/0003-devicetree-overlay-precedence.md)).
 - R4.4 Each upstream Zephyr file has exactly one owning patch in `patches/`.

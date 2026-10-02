@@ -236,7 +236,7 @@ if(ZEPHCORE_PLATFORM STREQUAL "esp32")
     endif()
 endif()
 
-# Ethernet companion (app over TCP beside BLE and USB) on boards whose
+# Ethernet companion (app over TCP beside any other companion transport) on boards whose
 # zephcore.yml declares `capabilities: ethernet: true`. Outside the platform
 # block above: nothing about a wired MAC is Espressif-specific.
 if(ZEPHCORE_BUILD_ROLE STREQUAL "companion" AND ZEPHCORE_BOARD_ETHERNET
