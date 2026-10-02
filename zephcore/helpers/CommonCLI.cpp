@@ -561,6 +561,10 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 		if (cap > MAX_FRAME_SIZE - 1) {
 			cap = MAX_FRAME_SIZE - 1;
 		}
+		/* A local request's "xx|" prefix shares that frame too. */
+		if (sender_timestamp == 0 && _reply_hdr_used < cap) {
+			cap -= _reply_hdr_used;
+		}
 #endif
 		zephcore_hw::handle(command, reply, cap, sender_timestamp == 0,
 				    _board, _rtc, _callbacks);
