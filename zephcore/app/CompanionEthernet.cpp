@@ -136,14 +136,17 @@ static void set_stable_mac(struct net_if *iface)
 	if (!net_if_is_admin_up(iface)) {
 		rc = net_if_up(iface);
 		if (rc < 0) {
-			/* ethernet_enable() refuses a link address it considers
-			 * invalid, and the interface then stays down for good:
-			 * on a node whose only way in is this interface, that is
-			 * silent death. Put the controller's own address back
-			 * and try once more. */
-			LOG_ERR("Interface did not come back up (%d), reverting MAC", rc);
-			(void)net_mgmt(NET_REQUEST_ETHERNET_SET_MAC_ADDRESS, iface,
-				       &prev, sizeof(prev));
+			/* A down interface is silent death on a node whose only
+			 * way in is this one, so try once more. The controller's
+			 * own address is only worth restoring when it already
+			 * brought the interface up; otherwise it is the invalid
+			 * one, and the derived address was validated above. */
+			LOG_ERR("Interface did not come up (%d), retrying%s", rc,
+				was_up ? " with the controller's MAC" : "");
+			if (was_up) {
+				(void)net_mgmt(NET_REQUEST_ETHERNET_SET_MAC_ADDRESS, iface,
+					       &prev, sizeof(prev));
+			}
 			rc = net_if_up(iface);
 			if (rc < 0) {
 				LOG_ERR("Interface still down (%d)", rc);

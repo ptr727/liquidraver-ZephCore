@@ -264,9 +264,9 @@ full-size VLAN-tagged one: the chip delivers frames longer than 1518 bytes
 the length check took the frame for a corrupt header. A frame up to 1536 bytes,
 the limit Linux's driver also uses, that is larger than the buffer is now
 dropped by its length. Above 1536 the read pointer is not trusted and the
-controller is still restarted, so a frame of that size from a neighbour, which
-only a LAN carrying jumbo frames sends, still costs a link outage and a new
-DHCP lease.
+controller is still restarted. Standard Ethernet frames never get that long,
+but any host on the same segment can send one, and each such frame costs a
+link outage and a new DHCP lease.
 
 Measured under a 5 packet per second ping, ten minutes each:
 
