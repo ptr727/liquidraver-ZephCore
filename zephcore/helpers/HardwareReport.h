@@ -39,9 +39,9 @@ namespace zephcore_hw {
 
 /*
  * Write the reply for `command`, which is the full CLI line starting at "hw".
- * `cap` is the caller's reply capacity -- CLI_REPLY_SIZE locally, or
- * CLI_REMOTE_REPLY_SIZE when the request came from remote mesh admin, since a
- * remote reply rides the caller's LoRa packet buffer.
+ * `cap` is the caller's reply capacity: CommonCLI::replyCap(), which allows for
+ * a remote reply's "xx|" prefix, and on a companion at most one app CLI frame
+ * (MAX_FRAME_SIZE - 1).
  *
  * `local` is true only when the request did not arrive over the air. Note it
  * is NOT a test for "this is a serial console": on companion firmware the USB

@@ -321,10 +321,12 @@ void section_rtc(Sink *s, mesh::RTCClock *rtc)
 {
 	(void)rtc;
 
-	if (!IS_ENABLED(CONFIG_ZEPHCORE_RTC_AUTODISCOVER)) {
+	if (!IS_ENABLED(CONFIG_ZEPHCORE_RTC_AUTODISCOVER) &&
+	    DT_NUM_INST_STATUS_OKAY(zephcore_rtc_i2c) > 0) {
 		/* The discovery stubs report nothing declared, which would
 		 * contradict `hw i2c` listing the descriptors. */
-		sink_line(s, "rtc: autodiscovery disabled");
+		sink_line(s, "rtc: %u declared, autodiscovery disabled",
+			  (unsigned)DT_NUM_INST_STATUS_OKAY(zephcore_rtc_i2c));
 		return;
 	}
 
@@ -583,7 +585,8 @@ void section_summary(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 		 * address is not appended here -- doing so rendered
 		 * "rtc-rv3028@52@0x52" on real hardware. */
 		sink_line(s, "rtc %s", active.name);
-	} else if (!IS_ENABLED(CONFIG_ZEPHCORE_RTC_AUTODISCOVER)) {
+	} else if (!IS_ENABLED(CONFIG_ZEPHCORE_RTC_AUTODISCOVER) &&
+		   DT_NUM_INST_STATUS_OKAY(zephcore_rtc_i2c) > 0) {
 		sink_line(s, "rtc autodiscovery disabled");
 	} else if (zephcore_rtc_declared() == 0) {
 		sink_line(s, "rtc none declared");
