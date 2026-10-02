@@ -43,7 +43,9 @@ All commands are sent over USB serial (CDC-ACM). Commands sent remotely over the
 compiles every `MESH_DEBUG_*` call away, so this is the only way to get these facts off a
 stock node. Implemented in `helpers/HardwareReport.cpp` and dispatched from `CommonCLI`, so
 it is available on the **three roles that route through it** — companion, repeater and room
-server. The observer has a CLI of its own and does not offer `hw`.
+server. The observer has a CLI of its own and does not offer `hw`. On a companion `hw` is local
+only (USB, the app's CLI command and the V-Contact chat): the companion forwards remote admin
+commands only from upstream's set, and ZephCore-only commands stay local by design.
 
 | Command | Description |
 |---------|-------------|
