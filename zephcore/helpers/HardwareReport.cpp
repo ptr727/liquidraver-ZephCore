@@ -108,6 +108,17 @@ void sink_line(Sink *s, const char *fmt, ...)
 	}
 
 	size_t need = strlen(line) + (s->len ? 1 : 0);
+	if (s->len == 0 && need >= s->cap) {
+		/* A line longer than a whole page would otherwise never be
+		 * emitted, and every resume would point back at it. Emit what
+		 * fits, marked as cut, so paging moves on. */
+		size_t keep = s->cap - 1;
+		line[keep] = '\0';
+		if (keep > 3) {
+			memcpy(line + keep - 3, "...", 3);
+		}
+		need = keep;
+	}
 	if (s->len + need >= s->cap) {
 		s->full = true;
 		/* Clamp rather than let snprintf truncate the digits: a cut
