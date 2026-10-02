@@ -5,6 +5,9 @@
 
 #include "CommonCLI.h"
 #include "HardwareReport.h"
+#if IS_ENABLED(CONFIG_ZEPHCORE_ROLE_COMPANION)
+#include "../adapters/transport/companion_framing.h"
+#endif
 #include "battery_curve.h"
 #include "led_gate.h"
 #include "buzzer_gate.h"
@@ -548,10 +551,17 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 			snprintf(reply, CLI_REPLY_SIZE, "File system erase: Err");
 		}
 	} else if (memcmp(command, "hw", 2) == 0) {
-		/* Remote admin replies ride the caller's LoRa packet buffer, so the
-		 * capacity differs -- same idiom as get cad.stats. */
-		size_t cap = (sender_timestamp == 0) ? CLI_REPLY_SIZE
-						     : CLI_REMOTE_REPLY_SIZE;
+		/* replyCap() allows for a remote reply's "xx|" prefix. On a
+		 * companion a local reply may be the app's CLI frame, which carries
+		 * MAX_FRAME_SIZE - 1 bytes and cannot be told apart from the USB
+		 * console here, so page to the frame rather than have it cut the
+		 * resume marker off. */
+		size_t cap = replyCap(sender_timestamp);
+#if IS_ENABLED(CONFIG_ZEPHCORE_ROLE_COMPANION)
+		if (cap > MAX_FRAME_SIZE - 1) {
+			cap = MAX_FRAME_SIZE - 1;
+		}
+#endif
 		zephcore_hw::handle(command, reply, cap, sender_timestamp == 0,
 				    _board, _rtc, _callbacks);
 	} else if (memcmp(command, "ver", 3) == 0) {
