@@ -102,8 +102,8 @@ static void civil_from_days(int64_t z, int *y, unsigned *m, unsigned *d)
 	*y = yy + (*m <= 2);
 }
 
-/* Read the chip's power-loss flag. true => held time is unreliable. */
-static bool rtc_time_unreliable(const struct rtc_desc *d, const uint8_t blk[7])
+/* Read the chip's power-loss flag: 1 set, 0 clear, -1 the status read failed. */
+static int rtc_power_lost(const struct rtc_desc *d, const uint8_t blk[7])
 {
 	if (d->status_reg == RTC_STATUS_IN_SECONDS) {
 		return (blk[0] & d->status_mask) != 0;
@@ -111,7 +111,7 @@ static bool rtc_time_unreliable(const struct rtc_desc *d, const uint8_t blk[7])
 
 	uint8_t st;
 	if (i2c_reg_read_byte(d->bus, d->addr, d->status_reg, &st) != 0) {
-		return true;  /* can't confirm => don't trust it */
+		return -1;
 	}
 	return (st & d->status_mask) != 0;
 }
@@ -167,15 +167,22 @@ static bool rtc_probe(uint32_t *epoch_out)
 			      bcd_field_ok(hb, 23) && bcd_field_ok(db, 31) &&
 			      bcd_field_ok(ob, 12) && bcd_field_ok(yb, 99) &&
 			      BCD2BIN(db) >= 1 && BCD2BIN(ob) >= 1;
-		bool unreliable = rtc_time_unreliable(d, blk);
+		int lost = rtc_power_lost(d, blk);
 
-		if (!bcd_ok && !unreliable) {
+		if (!bcd_ok && lost != 1) {
 			/* Something ACKed here, but it does not behave like an RTC --
-			 * an IMU at 0x68, say. Absent means "no RTC here", which is
-			 * the honest answer for reporting too. */
+			 * an IMU at 0x68, say. A failed status read is no evidence
+			 * of a lost-power RTC, so it is not adopted on that either:
+			 * adopting it would write the time into whatever chip it is.
+			 * Absent means "no RTC here", the honest answer for
+			 * reporting too. */
 			s_state[i] = ZEPHCORE_RTC_ABSENT;
-			continue;  /* neither valid time nor a lost-power RTC => skip */
+			continue;
 		}
+
+		/* Valid time but an unreadable flag: adopt, but do not trust
+		 * the time, as before. */
+		bool unreliable = (lost != 0);
 
 		s_state[i] = ZEPHCORE_RTC_PRESENT;
 
@@ -184,8 +191,9 @@ static bool rtc_probe(uint32_t *epoch_out)
 		}
 
 		if (unreliable) {
-			LOG_WRN("%s present, power-loss flag set — clock will be set "
-				"on the next GPS/app/CLI sync", d->name);
+			LOG_WRN("%s present, %s — clock will be set on the next "
+				"GPS/app/CLI sync", d->name,
+				(lost > 0) ? "power-loss flag set" : "status unreadable");
 			continue;
 		}
 
