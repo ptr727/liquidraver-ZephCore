@@ -5,7 +5,7 @@ This is the cumulative diff of the upstream-bound commits on the fork
 ptr727/zephyrproject-rtos-zephyr: integration PR #1 (work/dm9051-fixes, the
 generic DM9051 fixes) and PR #2 (work/ch390-support, the CH390 support). One
 section per upstream commit follows, carrying its rationale. The CH390
-devicetree binding (fork commit 29fd9f8d5630) is not part of this diff: it is
+devicetree binding (fork commit d8e2dc8313ea) is not part of this diff: it is
 a new file, so it lives in patches/zephyr-new/dts/bindings/ethernet/ instead.
 When these land upstream, drop the matching sections and regenerate.
 
@@ -100,13 +100,37 @@ drain.
 Built for native_sim and native_sim/native/64 with the build_all
 ethernet SPI test.
 
-== drivers: ethernet: dm9051: add WCH CH390 support (fork ea72aed8533e) ==
+== drivers: ethernet: dm9051: restart the controller when an RX read fails (fork e1af066438a4) ==
+
+Each MRCMD read advances the RX SRAM read pointer. When the header,
+discard or data read of a frame failed, eth_dm9051_recv_pkt() only
+returned the error, and the pointer was no longer known to be at a
+frame boundary. The next drain then parsed frame data as a header, or,
+where bit 0 of the byte at the pointer was clear, found no frame and
+left reception stalled. That includes the discard of an oversized
+frame, which this series added in place of a restart.
+
+Restart the controller after a failed MRCMD read, as the error path for
+an untrusted header already does, so that reception resumes at a frame
+boundary. The restart moves to a shared label. The MRCMDX flag read
+does not move the pointer, and its failure still only ends the drain.
+A restart renegotiates the link. A failed transfer that moved no bytes
+now pays that cost too, since the SPI API does not report how many
+bytes were clocked.
+
+Built for native_sim and native_sim/native/64 with the build_all
+ethernet SPI test, and for esp32s3_devkitc/esp32s3/procpu with
+warnings as errors. The changed paths need a failed SPI transfer and
+were not exercised on hardware.
+
+== drivers: ethernet: dm9051: add WCH CH390 support (fork 3294067c9f16) ==
 
 The WCH CH390 has the register map of the DM9051 but reports product ID
 0x9151, so eth_dm9051_check_id() rejects it. Carry the expected product
 ID in the instance config and instantiate the driver for the wch,ch390
 compatible as well, the same way eth_adin2111.c serves the ADIN2111 and
-the ADIN1110.
+the ADIN1110. Both product ID log messages now print the ID converted
+from little endian.
 
 The CH390 also behaves differently in three places, each handled for
 the CH390 only so the DM9051 path is unchanged. Espressif's CH390
@@ -133,7 +157,7 @@ writes differs.
   is out of range, when the header's ready byte is not 0x01, or when
   the skip fails. eth_dm9051_recv_pkt() reports a skipped frame as
   -EBADMSG, and the drain continues after it as it does after a dropped
-  oversized frame. pkt is initialized in the drain loop because GCC
+  oversized frame. pkt is initialized in eth_dm9051_rx() because GCC
   cannot prove it set once two codes continue the drain
   (-Werror=maybe-uninitialized on native_sim):
   https://github.com/espressif/esp-eth-drivers/blob/6c6e77f97ed4c56142140ee14e9ef7f3a4451b7b/ch390/src/esp_eth_mac_ch390.c#L812-L815
@@ -177,7 +201,7 @@ index b3f13fab327..7063712937b 100644
  config ETH_DM9051_RX_THREAD_STACK_SIZE
  	int "Stack size for internal incoming packet handler"
 diff --git a/drivers/ethernet/eth_dm9051.c b/drivers/ethernet/eth_dm9051.c
-index a8406e69fae..cbbd6911ea3 100644
+index a8406e69fae..aa471b308c7 100644
 --- a/drivers/ethernet/eth_dm9051.c
 +++ b/drivers/ethernet/eth_dm9051.c
 @@ -33,9 +33,15 @@ LOG_MODULE_REGISTER(eth_dm9051, CONFIG_ETHERNET_LOG_LEVEL);
@@ -231,7 +255,7 @@ index a8406e69fae..cbbd6911ea3 100644
  	uint16_t pid;
  	int ret;
  
-@@ -323,8 +339,9 @@ static int eth_dm9051_check_id(const struct device *dev)
+@@ -323,12 +339,13 @@ static int eth_dm9051_check_id(const struct device *dev)
  	}
  
  	/* Check product ID */
@@ -243,6 +267,11 @@ index a8406e69fae..cbbd6911ea3 100644
  		return -EIO;
  	}
  
+-	LOG_INF("%s: Found ID: %04x\n", dev->name, pid);
++	LOG_INF("%s: Found ID: %04x", dev->name, sys_le16_to_cpu(pid));
+ 
+ 	return ret;
+ }
 @@ -367,6 +384,33 @@ static int eth_dm9051_nsr_poll(const struct device *dev, k_timeout_t timeout)
  	return -ETIMEDOUT;
  }
@@ -340,7 +369,7 @@ index a8406e69fae..cbbd6911ea3 100644
  	if (ret < 0) {
  		LOG_ERR("%s: Failed to read RX header (err %d)", dev->name, ret);
 -		return NULL;
-+		return ret;
++		goto out_restart;
  	}
  
  	rx_len = sys_get_le16(rxhdr.len);
@@ -389,25 +418,34 @@ index a8406e69fae..cbbd6911ea3 100644
  		if (ret < 0) {
 -			LOG_ERR("%s: Failed to restart HW after RX error (err %d)", dev->name, ret);
 +			LOG_ERR("%s: Failed to discard RX data (err %d)", dev->name, ret);
-+			return ret;
++			goto out_restart;
  		}
 -		return NULL;
 +		return -EMSGSIZE;
  	}
  
  	/* Alloc RX net_pkt and subtract 4 from RX length to discard CRC */
-@@ -535,8 +624,9 @@ static struct net_pkt *eth_dm9051_recv_pkt(const struct device *dev)
+@@ -535,15 +624,17 @@ static struct net_pkt *eth_dm9051_recv_pkt(const struct device *dev)
  		ret = eth_dm9051_spi_read_mem(dev, DM9051_MRCMD, NULL, rx_len);
  		if (ret < 0) {
  			LOG_ERR("%s: Failed to discard RX data (err %d)", dev->name, ret);
-+			return ret;
++			goto out_restart;
  		}
 -		return NULL;
 +		return -ENOMEM;
  	}
  
  	/* Read RX data from RX SRAM */
-@@ -552,17 +642,27 @@ static struct net_pkt *eth_dm9051_recv_pkt(const struct device *dev)
+ 	ret = eth_dm9051_spi_read_mem(dev, DM9051_MRCMD, data->rx_buf, rx_len);
+ 	if (ret < 0) {
+ 		LOG_ERR("%s: Failed to read RX data (err %d)", dev->name, ret);
+-		goto out_net_pkt_unref;
++		net_pkt_unref(pkt);
++		goto out_restart;
+ 	}
+ 
+ 	/* Write RX data to net_pkt */
+@@ -552,17 +643,27 @@ static struct net_pkt *eth_dm9051_recv_pkt(const struct device *dev)
  		goto out_net_pkt_unref;
  	}
  
@@ -422,7 +460,7 @@ index a8406e69fae..cbbd6911ea3 100644
 +	return ret;
 +
 +out_restart:
-+	/* Resynchronize RX SRAM by restarting the controller */
++	/* The RX SRAM read pointer is not known to be at a frame boundary */
 +	ret = eth_dm9051_hw_start(dev, data->iface);
 +	if (ret < 0) {
 +		LOG_ERR("%s: Failed to restart HW after RX error (err %d)", dev->name, ret);
@@ -438,7 +476,7 @@ index a8406e69fae..cbbd6911ea3 100644
  	uint16_t flag;
  	int ret;
  
-@@ -582,9 +682,13 @@ static int eth_dm9051_rx(const struct device *dev)
+@@ -582,9 +683,13 @@ static int eth_dm9051_rx(const struct device *dev)
  		}
  
  		/* Get received packet */
@@ -455,7 +493,7 @@ index a8406e69fae..cbbd6911ea3 100644
  			goto out_update_errors_rx;
  		}
  
-@@ -670,19 +774,36 @@ static void eth_dm9051_rx_thread(void *p1, void *p2, void *p3)
+@@ -670,19 +775,36 @@ static void eth_dm9051_rx_thread(void *p1, void *p2, void *p3)
  	ARG_UNUSED(p2);
  	ARG_UNUSED(p3);
  
@@ -493,7 +531,7 @@ index a8406e69fae..cbbd6911ea3 100644
  			LOG_ERR("%s: Failed to read ISR (err %d)", dev->name, ret);
  			eth_stats_update_errors_rx(data->iface);
  			continue;
-@@ -690,6 +811,7 @@ static void eth_dm9051_rx_thread(void *p1, void *p2, void *p3)
+@@ -690,6 +812,7 @@ static void eth_dm9051_rx_thread(void *p1, void *p2, void *p3)
  
  		ret = eth_dm9051_spi_write_reg(dev, DM9051_ISR, isr);
  		if (ret < 0) {
@@ -501,7 +539,7 @@ index a8406e69fae..cbbd6911ea3 100644
  			LOG_ERR("%s: Failed to write ISR (err %d)", dev->name, ret);
  			eth_stats_update_errors_rx(data->iface);
  			continue;
-@@ -977,6 +1099,14 @@ static int eth_dm9051_init(const struct device *dev)
+@@ -977,6 +1100,14 @@ static int eth_dm9051_init(const struct device *dev)
  		return ret;
  	}
  
@@ -516,7 +554,7 @@ index a8406e69fae..cbbd6911ea3 100644
  	ret = eth_dm9051_set_mac_addr(dev);
  	if (ret < 0) {
  		LOG_WRN("%s: Unable to set MAC address", dev->name);
-@@ -987,24 +1117,32 @@ static int eth_dm9051_init(const struct device *dev)
+@@ -987,24 +1118,32 @@ static int eth_dm9051_init(const struct device *dev)
  	return 0;
  }
  
