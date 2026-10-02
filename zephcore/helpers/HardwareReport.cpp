@@ -111,7 +111,10 @@ void sink_line(Sink *s, const char *fmt, ...)
 	if (s->len == 0 && need >= s->cap) {
 		/* A line longer than a whole page would otherwise never be
 		 * emitted, and every resume would point back at it. Emit what
-		 * fits, marked as cut, so paging moves on. */
+		 * fits, marked as cut, so paging moves on. The page is not
+		 * marked full here: it now holds cap - 1 bytes, so any next
+		 * line fails the fit test below and sets ` next:N` itself, and
+		 * with no next line there is nothing left to resume. */
 		size_t keep = s->cap - 1;
 		line[keep] = '\0';
 		if (keep > 3) {

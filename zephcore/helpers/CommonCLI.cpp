@@ -550,7 +550,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 		} else {
 			snprintf(reply, CLI_REPLY_SIZE, "File system erase: Err");
 		}
-	} else if (memcmp(command, "hw", 2) == 0) {
+	} else if (memcmp(command, "hw", 2) == 0 && (command[2] == '\0' || command[2] == ' ')) {
 		/* replyCap() allows for a remote reply's "xx|" prefix. On a
 		 * companion a local reply may be the app's CLI frame, which carries
 		 * MAX_FRAME_SIZE - 1 bytes and cannot be told apart from the USB
