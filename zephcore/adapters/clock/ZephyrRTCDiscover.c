@@ -124,8 +124,10 @@ static bool rtc_probe(uint32_t *epoch_out)
 	 * zephcore_rtc_save() probes if restore never ran -- and it returns
 	 * early once a chip holds a valid time. Without this reset, candidates
 	 * the later run never reached would keep the previous run's PRESENT or
-	 * ABSENT, which is precisely the stale claim UNPROBED exists to avoid. */
+	 * ABSENT, which is precisely the stale claim UNPROBED exists to avoid.
+	 * The adopted chip is part of the same outcome, so it is reset too. */
 	memset(s_state, ZEPHCORE_RTC_UNPROBED, sizeof(s_state));
+	s_active = NULL;
 
 	for (size_t i = 0; i < ARRAY_SIZE(rtc_descs); i++) {
 		const struct rtc_desc *d = &rtc_descs[i];
