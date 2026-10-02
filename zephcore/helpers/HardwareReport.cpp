@@ -36,8 +36,9 @@ extern "C" {
 #define HW_HAS_GPS_HDR 1
 #endif
 
-/* The GNSS node and its UART both okay: the GPS manager's own condition
- * (HAS_GPS_UART, adapters/gps/gps_internal.h). */
+/* The GNSS node and its UART both okay: the devicetree half of the GPS
+ * manager's HAS_GPS_UART (adapters/gps/gps_internal.h), which also needs a
+ * supported compatible; `available` below reports that part. */
 #if DT_NODE_EXISTS(DT_NODELABEL(gnss))
 #define HW_GNSS_OKAY (DT_NODE_HAS_STATUS(DT_NODELABEL(gnss), okay) && \
 		      DT_NODE_HAS_STATUS(DT_BUS(DT_NODELABEL(gnss)), okay))
