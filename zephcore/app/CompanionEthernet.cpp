@@ -13,8 +13,10 @@
 #include <helpers/net_hostname_label.h>
 #include <helpers/pm_sleep_guard.h>
 
-#include <zephyr/drivers/hwinfo.h>
 #include <zephyr/kernel.h>
+#if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_ETHERNET_STABLE_MAC)
+#include <esp_mac.h>
+#endif
 #include <zephyr/logging/log.h>
 #include <zephyr/net/ethernet.h>
 #include <zephyr/net/ethernet_mgmt.h>
@@ -69,26 +71,20 @@ static struct net_if *ethernet_iface(void)
 #if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_ETHERNET_STABLE_MAC)
 /*
  * A DHCP reservation is only worth making against an address that survives a
- * reboot, so derive one from the factory efuse rather than leaving whatever the
- * controller powered up with. On ESP32 hwinfo_get_device_id() is the efuse base
- * MAC, and ESP-IDF derives its Ethernet address from the same base by adding 3
- * to the last octet, so this should also match what a vendor firmware on this
- * board uses.
+ * reboot, so take the SoC's own Ethernet MAC rather than leaving whatever the
+ * controller powered up with. esp_read_mac() applies ESP-IDF's allocation
+ * scheme, so this matches what a vendor firmware on this board uses.
  */
 static void set_stable_mac(struct net_if *iface)
 {
 	struct ethernet_req_params params = {};
-	uint8_t base[6];
-	ssize_t len = hwinfo_get_device_id(base, sizeof(base));
+	esp_err_t err = esp_read_mac(params.mac_address.addr, ESP_MAC_ETH);
 
-	if (len != (ssize_t)sizeof(base)) {
-		LOG_WRN("No device ID (%d) — keeping the controller's address, which "
-			"is not stable across a power cycle", (int)len);
+	if (err != ESP_OK) {
+		LOG_WRN("No Ethernet MAC from efuse (%d) — keeping the controller's "
+			"address, which is not stable across a power cycle", (int)err);
 		return;
 	}
-
-	memcpy(params.mac_address.addr, base, sizeof(base));
-	params.mac_address.addr[5] += 3;        /* ESP-IDF's Ethernet offset */
 
 	/* An efuse that reads back as zero, broadcast or a multicast address
 	 * would be refused by ethernet_enable() and take the interface down

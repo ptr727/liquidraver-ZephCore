@@ -119,7 +119,7 @@ Verified on hardware 2026-09-30, on the board this port was written for.
 | LR1110 identity | `HW:0x22 Type:0x01 FW:0x0303`; RF switch `en=0x03 rx=0x01 tx=0x03 txhp=0x02` |
 | Radio configured | `freq=927875008 bw=62 sf=7 cr=5 pwr=1` |
 | Radio receive | Discovered real nodes, so the sync word is honoured on FW `0x0303` |
-| Ethernet controller | CH390 `Found ID: 9151`; address set to the efuse base MAC plus 3 |
+| Ethernet controller | CH390 `Found ID: 9151`; address set to the SoC's Ethernet MAC (`esp_read_mac`, the efuse base MAC plus 3 on the ESP32-S3's four-address scheme) |
 | Ethernet link | Up at 100 Mbps, agreed by the switch |
 | DHCP | Lease acquired |
 | Reachability | Ping 5/5 at 1.58 ms average; the companion's TCP port open from another host |
