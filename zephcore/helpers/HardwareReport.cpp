@@ -459,8 +459,21 @@ void section_i2c_scan(Sink *s)
 		 * some controller drivers assert on NULL before looking at len. */
 		uint8_t probe = 0;
 
+		bool stuck = false;
+
 		for (uint16_t addr = 0x08; addr <= 0x77; addr++) {
-			if (i2c_write(bus, &probe, 0, addr) != 0) {
+			int rc = i2c_write(bus, &probe, 0, addr);
+
+			if (rc == -ETIMEDOUT || rc == -EBUSY) {
+				/* A dead or held bus can take the driver's whole
+				 * timeout on every address, blocking the CLI thread
+				 * for most of a minute. -EIO is an ordinary miss. */
+				sink_line(s, "%s: bus not responding at 0x%02x (err %d), scan stopped",
+					  bus->name, addr, rc);
+				stuck = true;
+				break;
+			}
+			if (rc != 0) {
 				continue;
 			}
 			found++;
@@ -514,7 +527,9 @@ void section_i2c_scan(Sink *s)
 		}
 
 		if (found == 0) {
-			sink_line(s, "%s: none found", bus->name);
+			if (!stuck) {
+				sink_line(s, "%s: none found", bus->name);
+			}
 		} else if (used > header) {
 			sink_line(s, "%s", line);
 		}

@@ -72,7 +72,9 @@ This is deliberate and the replies say which is which.
   does not declare.**
 - **`hw i2c scan`** probes the wire with a zero-length write to each address. It finds
   undeclared hardware, but a bare address is all the bus itself reveals; declared addresses
-  are annotated with their compatible.
+  are annotated with their compatible. A probe that times out or finds the bus busy stops
+  that bus's scan with `bus not responding at 0xNN (err N), scan stopped`, so a dead or held
+  bus cannot keep the CLI waiting through every address.
 
 A scan and a devicetree enumeration are not the same fact. Reporting one as the other is how
 a tool ends up stating something nobody established.
