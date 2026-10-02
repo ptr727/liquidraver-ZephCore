@@ -54,7 +54,7 @@ commands only from upstream's set, and ZephCore-only commands stay local by desi
 | `hw rtc [start]` | Declared I2C RTC candidates and the boot probe's outcome for each |
 | `hw i2c [start]` | Devicetree-declared I2C inventory. **Not a bus scan** — no bus traffic |
 | `hw i2c scan [start]` | Live scan of 0x08–0x77 on each bus carrying a declared device, naming declared addresses (see the coverage note below) |
-| `hw gps [start]` | GNSS driver compatible, transport, baud, and enable state |
+| `hw gps [start]` | GNSS driver compatible, transport, baud, and enable state. A GNSS node, or its UART, disabled in devicetree reports `declared but disabled` (the summary says `disabled`), since the GPS manager does not use it |
 | `hw sensors [start]` | Each sensor the boot probe found, environment and power monitors alike, and the fields it reports |
 | `hw all [start]` | `board`, `rtc`, `i2c`, `gps` and `sensors`, in that order. Not the summary, and not `hw i2c scan`, which puts traffic on the bus |
 | `hw <anything else>` | Usage string |
