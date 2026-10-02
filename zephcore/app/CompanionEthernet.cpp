@@ -34,7 +34,7 @@ static struct net_mgmt_event_callback s_iface_cb;
 static struct net_mgmt_event_callback s_ipv4_cb;
 
 static struct net_if *s_iface;
-static volatile bool s_dhcp_bound;
+static atomic_t s_dhcp_bound;   /* written by net_mgmt, read by the CLI */
 
 /*
  * Not net_if_get_first_by_type(ETHERNET) on its own: a WiFi interface
@@ -203,7 +203,7 @@ static void iface_event(struct net_mgmt_event_callback *cb, uint64_t event,
 		/* Nothing to tear down: the TCP listener stays bound and the app
 		 * reconnects by itself once the link returns. */
 		LOG_INF("Ethernet link down");
-		s_dhcp_bound = false;
+		atomic_set(&s_dhcp_bound, 0);
 	}
 }
 
@@ -216,10 +216,11 @@ static void ipv4_event(struct net_mgmt_event_callback *cb, uint64_t event,
 		return;         /* another interface's lease is not ours */
 	}
 
-	if (event == NET_EVENT_IPV4_DHCP_STOP) {
-		/* A NAK or an expiry ends the lease with the carrier still up, so
-		 * without this the status stays "bound" with no address. */
-		s_dhcp_bound = false;
+	if (event == NET_EVENT_IPV4_DHCP_STOP || event == NET_EVENT_IPV4_ADDR_DEL) {
+		/* A NAK or an expiry takes the leased address off with the carrier
+		 * still up and raises only ADDR_DEL; DHCP_STOP is a stopped client.
+		 * Without either, the status stays "bound" with no address. */
+		atomic_set(&s_dhcp_bound, 0);
 		LOG_INF("DHCP lease ended");
 		return;
 	}
@@ -230,7 +231,7 @@ static void ipv4_event(struct net_mgmt_event_callback *cb, uint64_t event,
 
 	char addr[NET_IPV4_ADDR_LEN];
 
-	s_dhcp_bound = true;
+	atomic_set(&s_dhcp_bound, 1);
 	if (ethernet_ip(addr, sizeof(addr))) {
 		LOG_INF("DHCP bound: %s", addr);
 	}
@@ -264,7 +265,8 @@ void companion_ethernet_start(const NodePrefs &prefs)
 	net_mgmt_add_event_callback(&s_iface_cb);
 
 	net_mgmt_init_event_callback(&s_ipv4_cb, ipv4_event,
-				     NET_EVENT_IPV4_DHCP_BOUND | NET_EVENT_IPV4_DHCP_STOP);
+				     NET_EVENT_IPV4_DHCP_BOUND | NET_EVENT_IPV4_DHCP_STOP |
+				     NET_EVENT_IPV4_ADDR_DEL);
 	net_mgmt_add_event_callback(&s_ipv4_cb);
 
 	net_dhcpv4_start(s_iface);
@@ -277,7 +279,7 @@ bool companion_ethernet_cli(const char *command, char *reply)
 		bool up = s_iface && net_if_is_up(s_iface);
 
 		sprintf(reply, "> %s", !up            ? "link down" :
-				       s_dhcp_bound   ? "link up (dhcp bound)"
+				       atomic_get(&s_dhcp_bound) ? "link up (dhcp bound)"
 						      : "link up (no lease)");
 		return true;
 	}
