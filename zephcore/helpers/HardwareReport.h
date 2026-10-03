@@ -14,9 +14,9 @@
  * The rule every formatter here follows: report what the code KNOWS, never
  * what could be inferred. A devicetree comment naming a GNSS part is not
  * evidence the part is fitted (the rak4631 overlay documents a u-blox MAX-7Q
- * while binding gnss-nmea-generic, which happily drives the CASIC receiver
- * actually present). So a driver names itself, an unprobed address reports as
- * unprobed rather than absent, and an enable pin of -1 prints as -1.
+ * while binding gnss-nmea-generic, which drives whatever NMEA receiver is
+ * fitted). So a driver names itself, and an unprobed address reports as
+ * unprobed rather than absent.
  *
  * Named `hw`, not `hwinfo`, because <zephyr/drivers/hwinfo.h> is a Zephyr
  * subsystem this tree already uses; a CLI command sharing that name would read

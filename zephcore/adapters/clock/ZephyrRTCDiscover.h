@@ -44,8 +44,9 @@ void zephcore_rtc_save(uint32_t epoch);
  *
  * Discovery knows which chips the board declares and which one it adopted, but
  * until now kept both to itself, so a release build could not say what RTC it
- * is driving (every MESH_DEBUG_* call is compiled away). These expose that
- * without changing any probing behaviour.
+ * is driving (every MESH_DEBUG_* call is compiled away). These expose that.
+ * The one change to probing: each probe run starts from no adopted chip, so a
+ * second run reports its own outcome rather than the first run's.
  *
  * They report only what discovery actually established. The probe loop stops
  * at the first chip holding a valid time, so candidates after it are never
