@@ -19,6 +19,7 @@
 #endif
 #include <adapters/gps/ZephyrGPSManager.h>
 #include <helpers/time_sync.h>
+#include <helpers/net_hostname_label.h>
 #if IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_BUTTON) || IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)
 #include <ui_task.h>
 #define ZEPHCORE_HAS_UI_TASK 1
@@ -2180,6 +2181,8 @@ bool CompanionMesh::handleCmdSetAdvertName(const uint8_t *data, size_t len)
 #endif
 		/* v-contact name tracks the node name — update the app's copy. */
 		vcontactPushAdvert();
+		/* And the DHCP hostname, which the next lease renewal carries. */
+		zc_net_set_hostname(prefs.node_name);
 	}
 	writeOKFrame();
 	return true;

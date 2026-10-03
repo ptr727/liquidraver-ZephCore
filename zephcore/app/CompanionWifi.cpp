@@ -13,6 +13,7 @@
 #include <zephyr/logging/log.h>
 #include <helpers/TxtDataHelpers.h>
 #include <ZephyrWiFiStation.h>
+#include <helpers/net_hostname_label.h>
 
 LOG_MODULE_REGISTER(zephcore_wifi_companion, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
@@ -33,6 +34,11 @@ void companion_wifi_start(const NodePrefs &prefs)
 	}
 	memcpy(s_ssid, prefs.wifi_ssid, sizeof(s_ssid));
 	memcpy(s_pwd, prefs.wifi_pwd, sizeof(s_pwd));
+	/* Before the join, so the hostname is set when DHCP sends its
+	 * DISCOVER: as on Ethernet, this is what lets a DHCP server that
+	 * registers leases in DNS resolve the node by name. */
+	zc_net_set_hostname(prefs.node_name);
+
 	LOG_INF("WiFi companion: joining %s", s_ssid);
 	/* No SNTP time: the app sets the companion's clock, and time only moves
 	 * forward (see time_sync.h). */

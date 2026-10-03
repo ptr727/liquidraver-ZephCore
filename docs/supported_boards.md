@@ -61,6 +61,7 @@ lilygo_t3s3/esp32s3/procpu
 lilygo_tlora_c6/esp32c6/hpcore
 meshnology_w12/esp32s3/procpu
 station_g2/esp32s3/procpu
+thinknode_m7/esp32s3/procpu                 # source-only, no published firmware
 thinknode_m9/esp32s3/procpu                 # source-only, no published firmware
 ttgo_lora32/esp32/procpu                    # source-only, no published firmware
 ttgo_tbeam/esp32/procpu
@@ -99,6 +100,16 @@ xiao_esp32s3/esp32s3/procpu
 > **Heltec Wireless Tracker V2** (`heltec_wireless_tracker_v2/esp32s3/procpu`):
 > ESP32-S3FN8 companion with SX1262 + KCT8103L PA/FEM, ST7735R 160x80 TFT,
 > UC6580 GNSS, battery ADC, and USB-C native serial/JTAG.
+>
+> **ThinkNode M7** (`thinknode_m7/esp32s3/procpu`): ESP32-S3 (8MB flash, 8MB
+> PSRAM) with LR1110 and a WCH CH390 SPI Ethernet controller, optionally PoE
+> powered. No display, GNSS, buzzer, battery or SD card. Validated on
+> hardware 2026-09-30: radio, Ethernet, DHCP and the companion port all verified
+> (see the board README). The companion is
+> reached over TCP on the wired link (port 5000, as every other ZephCore TCP
+> companion), with BLE compiled out by default; the console is uart0 through the onboard CH340K
+> bridge. The CH390 is driven by Zephyr's DM9051 driver through a ZephCore
+> patch that teaches it the register-compatible WCH part.
 >
 > **ThinkNode M9** (`thinknode_m9/esp32s3/procpu`): ESP32-S3 (16MB flash, 8MB
 > PSRAM) handheld with LR1110, ST7789 320x240 TFT, CC1167Q GPS, PCF8563 RTC,

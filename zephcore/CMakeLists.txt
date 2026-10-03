@@ -236,6 +236,15 @@ if(ZEPHCORE_PLATFORM STREQUAL "esp32")
     endif()
 endif()
 
+# Ethernet companion (app over TCP beside any other companion transport) on boards whose
+# zephcore.yml declares `capabilities: ethernet: true`. Outside the platform
+# block above: nothing about a wired MAC is Espressif-specific.
+if(ZEPHCORE_BUILD_ROLE STREQUAL "companion" AND ZEPHCORE_BOARD_ETHERNET
+   AND NOT "ethernet_companion" IN_LIST _user_conf_names)
+    zephcore_add_conf(${_zc}/ethernet_companion.conf)
+    message(STATUS "  Ethernet companion: auto-enabled (board declares ethernet)")
+endif()
+
 # ---- User extras last, so they override everything above ----
 foreach(_c IN LISTS ZEPHCORE_USER_CONFS)
     zephcore_add_conf("${_c}")
@@ -638,6 +647,15 @@ else()
       ${CMAKE_CURRENT_SOURCE_DIR}/adapters/wifi
     )
   endif()
+  if(CONFIG_ZEPHCORE_COMPANION_ETHERNET)
+    target_sources(app PRIVATE app/CompanionEthernet.cpp)
+  endif()
+  # Unconditional: CompanionWifi.cpp and CompanionEthernet.cpp call
+  # zc_net_set_hostname() without a guard, so gating the implementation on
+  # NET_HOSTNAME_DYNAMIC would fail to link whenever that is off -- which
+  # NET_HOSTNAME_ENABLE=n does, and which NET_HOSTNAME_UNIQUE_UPDATE forces.
+  # The function body carries the guard instead and compiles to a no-op.
+  target_sources(app PRIVATE helpers/net_hostname_label.c)
   # Headless build (e.g. native Linux): no display/buttons/buzzer source files
   # are compiled, but companion code calls ui_* unconditionally. Weak no-op
   # stubs satisfy the link.

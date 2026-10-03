@@ -44,6 +44,12 @@ config MAIN_STACK_SIZE
 	default 6144 if ZEPHCORE_ROLE_COMPANION
 	default 8192
 
+# The driver's 800 peaked at 644 on the ThinkNode M7 under a ping flood with TCP
+# load (see ethernet_companion.conf). A default, not a profile assignment, as
+# it only exists when the DM9051 driver is built.
+config ETH_DM9051_RX_THREAD_STACK_SIZE
+	default 1024 if ZEPHCORE_COMPANION_ETHERNET
+
 # The air530z driver's dynamic model (patch 0005) follows ours, so one knob
 # sets it for every role, room servers included. Ahead of Kconfig.zephyr so
 # it beats the driver's own default.
@@ -476,6 +482,40 @@ config ZEPHCORE_COMPANION_WIFI
 	  companion builds of boards whose zephcore.yml declares
 	  `capabilities: wifi: true` (the ones with the RAM for WiFi and BLE
 	  together).
+
+config ZEPHCORE_COMPANION_ETHERNET
+	bool "Ethernet companion (app over TCP on the wired LAN)"
+	depends on ZEPHCORE_ROLE_COMPANION && NET_L2_ETHERNET
+	select ZEPHCORE_TRANSPORT_TCP
+	help
+	  Bring up the wired interface, take a DHCP lease, and serve the
+	  companion protocol over TCP on ZEPHCORE_TCP_PORT, beside the build's
+	  other companion transports (BLE, USB or UART, where enabled):
+	  every connected transport is served (MultiSerialInterface).
+
+	  Turned on by boards/common/ethernet_companion.conf, which CMake adds
+	  to companion builds of boards whose zephcore.yml declares
+	  `capabilities: ethernet: true`.
+
+	  There is no configuration surface to match the wifi.* CLI: a wired
+	  link needs no credentials, and the address is the DHCP server's to
+	  decide.  The eth.* commands are read-only.
+
+config ZEPHCORE_COMPANION_ETHERNET_STABLE_MAC
+	bool "Use the SoC's efuse Ethernet MAC address"
+	depends on ZEPHCORE_COMPANION_ETHERNET
+	depends on SOC_FAMILY_ESPRESSIF_ESP32
+	select NET_L2_ETHERNET_MGMT
+	default y
+	help
+	  Set the interface address from esp_read_mac(ESP_MAC_ETH) instead of
+	  keeping whatever the controller powered up with.  Without it the
+	  address is not stable across a power cycle, so a DHCP reservation
+	  stops matching and the node moves.
+
+	  ESP32 only: esp_read_mac() is an ESP-IDF API, which derives the
+	  address from the factory efuse base MAC under the configured
+	  universal-address scheme.
 
 endmenu # Companion TCP Transport
 

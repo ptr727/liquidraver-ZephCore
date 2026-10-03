@@ -7,6 +7,7 @@
 #pragma once
 
 #include <helpers/CommonCLI.h>
+#include <helpers/net_hostname_label.h>
 #include <helpers/StatsFormatHelper.h>
 #include <ZephyrDataStore.h>
 #include <ZephyrBoard.h>
@@ -33,6 +34,8 @@ public:
 
 	void savePrefs() override {
 		_store.savePrefs(_mesh.prefs);
+		/* `set name` saves through here: the next DHCP renewal carries it. */
+		zc_net_set_hostname(_mesh.prefs.node_name);
 	}
 	const char* getFirmwareVer() override { return FIRMWARE_VERSION; }
 	const char* getBuildDate() override { return FIRMWARE_BUILD_DATE; }

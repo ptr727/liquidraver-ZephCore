@@ -260,6 +260,17 @@ Companion builds of boards whose `zephcore.yml` declares `capabilities: wifi: tr
 | `get wifi.status` | `connected` once the link is up and DHCP has an address, else `disconnected` |
 | `get wifi.ip` | The address the app connects to (`(not connected)` otherwise) |
 
+## Companion Ethernet (`CONFIG_ZEPHCORE_COMPANION_ETHERNET`)
+
+Companion builds of boards whose `zephcore.yml` declares `capabilities: ethernet: true` (the ThinkNode M7) take a DHCP lease on the wired LAN and serve the companion protocol over TCP on port 5000 (`CONFIG_ZEPHCORE_TCP_PORT`), beside any other companion transport the build has (the M7 has BLE compiled out and no USB, so TCP is its only one). There is nothing to configure, so the commands only read. They are reachable from the app's CLI over any companion transport, and from a USB text console on a board that has one, but not over the air, because they are not in the remote-CLI allowlist.
+
+| Command | Returns |
+|---------|---------|
+| `get eth.status` | `link down`, `link up (no lease)` or `link up (dhcp bound)` |
+| `get eth.ip` | The leased address the app connects to (`(no lease)` otherwise) |
+| `get eth.host` | The DHCP hostname sent with the lease request: the node name, made into a DNS label. A rename updates it at once, and the DHCP server sees it from the next lease renewal |
+| `get eth.mac` | The interface's MAC address, which is the SoC's efuse Ethernet MAC on ESP32 (`CONFIG_ZEPHCORE_COMPANION_ETHERNET_STABLE_MAC`), so a DHCP reservation survives a reboot (`(no address)` if the interface has none) |
+
 ## `get` — Read Configuration
 
 | Command | Returns |

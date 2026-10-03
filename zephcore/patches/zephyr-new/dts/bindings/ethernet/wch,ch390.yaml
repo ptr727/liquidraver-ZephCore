@@ -1,0 +1,20 @@
+# Copyright The Zephyr Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  WCH CH390 10/100BASE-T Ethernet Controller with SPI interface.
+
+  The CH390 is register-compatible with the Davicom DM9051 and is supported by
+  the DM9051 driver.
+
+compatible: "wch,ch390"
+
+include: [spi-device.yaml, ethernet-controller.yaml]
+
+properties:
+  int-gpios:
+    type: phandle-array
+    required: true
+    description: |
+      Interrupt pin of the CH390. The driver configures the pin polarity of the
+      controller from the GPIO flags.

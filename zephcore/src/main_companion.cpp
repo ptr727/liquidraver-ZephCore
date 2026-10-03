@@ -49,6 +49,9 @@ LOG_MODULE_REGISTER(zephcore_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_WIFI)
 #include <app/CompanionWifi.h>
 #endif
+#if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_ETHERNET)
+#include <app/CompanionEthernet.h>
+#endif
 
 #if ZEPHCORE_USB_STACK
 #include <ZephyrUSBCDC.h>
@@ -545,11 +548,14 @@ static mesh::ZephyrMillisecondClock ms_clock;
 static mesh::ZephyrRNG zephyr_rng;
 static SimpleMeshTables mesh_tables;
 static StaticPoolPacketManager packet_mgr;
-/* A WiFi companion on a PSRAM board keeps this object (its contacts table and
- * offline queue are ~110 KB) in PSRAM, so WiFi and BLE fit in internal DRAM.
- * Safe: only the main thread touches it, never an ISR or a flash operation,
- * and the SoC boot zeroes .ext_ram.bss before any constructor runs. */
-#if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_WIFI) && IS_ENABLED(CONFIG_ESP_SPIRAM)
+/* A networked companion on a PSRAM board keeps this object (its contacts table
+ * and offline queue are ~110 KB) in PSRAM, so the network stack and BLE fit in
+ * internal DRAM. Safe: only the main thread touches it, never an ISR or a
+ * flash operation, and the SoC boot zeroes .ext_ram.bss before any constructor
+ * runs. Ethernet needs this as much as WiFi: without it the wired companion
+ * spends 119 KB of the ESP32-S3's internal DRAM here and links at 95% full. */
+#if (IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_WIFI) || \
+     IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_ETHERNET)) && IS_ENABLED(CONFIG_ESP_SPIRAM)
 #define COMPANION_MESH_SECTION __attribute__((section(".ext_ram.bss.companion_mesh")))
 #else
 #define COMPANION_MESH_SECTION
@@ -773,6 +779,11 @@ static void companion_cli_exec(const char *line, uint32_t sender_timestamp,
 	}
 #if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_WIFI)
 	if (companion_wifi_cli(line, companion_mesh.prefs, save_prefs_to_flash, reply)) {
+		return;
+	}
+#endif
+#if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_ETHERNET)
+	if (companion_ethernet_cli(line, reply)) {
 		return;
 	}
 #endif
@@ -1168,7 +1179,11 @@ int main(void)
 #endif
 #if IS_ENABLED(CONFIG_ZEPHCORE_TRANSPORT_TCP)
 	tcp_companion_init(&link_cbs);
+#if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_ETHERNET) && !IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_WIFI)
+	interface_manager.addInterface(InterfaceType::Ethernet, &tcp_interface);
+#else
 	interface_manager.addInterface(InterfaceType::WiFi, &tcp_interface);
+#endif
 #endif
 
 	/* Enables every interface; the ble_disabled pref then turns BLE back off
@@ -1187,6 +1202,9 @@ int main(void)
 #endif
 #if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_WIFI) && defined(ZEPHCORE_LORA)
 	companion_wifi_start(companion_mesh.prefs);
+#endif
+#if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_ETHERNET) && defined(ZEPHCORE_LORA)
+	companion_ethernet_start(companion_mesh.prefs);
 #endif
 #if IS_ENABLED(CONFIG_BT)
 	if (bt_enable(bt_ready) != 0) {
