@@ -1309,7 +1309,7 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, const char* command, cha
 					 _prefs->meshtimesync != 0);
 		}
 	} else {
-		snprintf(reply, CLI_REPLY_SIZE, "??: %s", config);
+		snprintf(reply, replyCap(sender_timestamp), "??: %s", config);
 	}
 }
 
@@ -1863,7 +1863,7 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, const char* command, cha
 			snprintf(reply, CLI_REPLY_SIZE, "OK - meshtimesync %s", on ? "on" : "off");
 		}
 	} else {
-		snprintf(reply, CLI_REPLY_SIZE, "unknown config: %.230s", config);
+		snprintf(reply, replyCap(sender_timestamp), "unknown config: %.230s", config);
 	}
 }
 

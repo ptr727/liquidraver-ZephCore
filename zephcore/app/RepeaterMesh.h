@@ -214,7 +214,7 @@ protected:
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK)
   // ZEPHCORE: MQTT uplink (app/RepeaterUplink.cpp).
-  bool handleUplinkCommand(const char *command, char *reply);
+  bool handleUplinkCommand(const char *command, char *reply, size_t cap);
   void markUplinkRebootRequired() { _uplink_reboot_required = true; }
   bool isUplinkEnabled() const { return (_uplink_creds._reserved[0] & 0x01) != 0; }
   void setUplinkEnabled(bool en) {

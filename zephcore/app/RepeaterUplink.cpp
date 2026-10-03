@@ -30,32 +30,32 @@ bool RepeaterMesh::saveUplinkCreds()
 	return observer_creds_save(&_uplink_creds, _store->getBasePath());
 }
 
-bool RepeaterMesh::handleUplinkCommand(const char *command, char *reply)
+bool RepeaterMesh::handleUplinkCommand(const char *command, char *reply, size_t cap)
 {
 	if (memcmp(command, "get uplink.", 11) == 0) {
 		const char *key = command + 11;
 		if (strcmp(key, "enable") == 0) {
-			snprintf(reply, CLI_REPLY_SIZE, "> %s", isUplinkEnabled() ? "on" : "off");
+			snprintf(reply, cap, "> %s", isUplinkEnabled() ? "on" : "off");
 		} else if (strcmp(key, "wifi.ssid") == 0) {
-			snprintf(reply, CLI_REPLY_SIZE, "> %s", _uplink_creds.wifi_ssid[0] ? _uplink_creds.wifi_ssid : "(not set)");
+			snprintf(reply, cap, "> %s", _uplink_creds.wifi_ssid[0] ? _uplink_creds.wifi_ssid : "(not set)");
 		} else if (strcmp(key, "mqtt.host") == 0) {
-			snprintf(reply, CLI_REPLY_SIZE, "> %s", _uplink_creds.mqtt_host[0] ? _uplink_creds.mqtt_host : "(not set)");
+			snprintf(reply, cap, "> %s", _uplink_creds.mqtt_host[0] ? _uplink_creds.mqtt_host : "(not set)");
 		} else if (strcmp(key, "mqtt.port") == 0) {
-			snprintf(reply, CLI_REPLY_SIZE, "> %u", (unsigned)_uplink_creds.mqtt_port);
+			snprintf(reply, cap, "> %u", (unsigned)_uplink_creds.mqtt_port);
 		} else if (strcmp(key, "mqtt.tls") == 0) {
-			snprintf(reply, CLI_REPLY_SIZE, "> %u", (unsigned)_uplink_creds.mqtt_tls);
+			snprintf(reply, cap, "> %u", (unsigned)_uplink_creds.mqtt_tls);
 		} else if (strcmp(key, "mqtt.user") == 0) {
-			snprintf(reply, CLI_REPLY_SIZE, "> %s", _uplink_creds.mqtt_user[0] ? _uplink_creds.mqtt_user : "(not set)");
+			snprintf(reply, cap, "> %s", _uplink_creds.mqtt_user[0] ? _uplink_creds.mqtt_user : "(not set)");
 		} else if (strcmp(key, "mqtt.iata") == 0) {
-			snprintf(reply, CLI_REPLY_SIZE, "> %s", _uplink_creds.mqtt_iata[0] ? _uplink_creds.mqtt_iata : "(not set)");
+			snprintf(reply, cap, "> %s", _uplink_creds.mqtt_iata[0] ? _uplink_creds.mqtt_iata : "(not set)");
 		} else if (strcmp(key, "status") == 0) {
-			snprintf(reply, CLI_REPLY_SIZE, "> enabled=%s wifi=%s mqtt=%s reboot_required=%s",
+			snprintf(reply, cap, "> enabled=%s wifi=%s mqtt=%s reboot_required=%s",
 				 isUplinkEnabled() ? "yes" : "no",
 				 zc_wifi_station_is_connected() ? "up" : "down",
 				 mqtt_publisher_is_connected() ? "up" : "down",
 				 _uplink_reboot_required ? "yes" : "no");
 		} else {
-			snprintf(reply, CLI_REPLY_SIZE, "unknown config: uplink.%s", key);
+			snprintf(reply, cap, "unknown config: uplink.%s", key);
 		}
 		return true;
 	}
@@ -101,7 +101,7 @@ bool RepeaterMesh::handleUplinkCommand(const char *command, char *reply)
 		} else if (key_len == 9 && memcmp(cfg, "mqtt.iata", 9) == 0) {
 			StrHelper::strncpy(_uplink_creds.mqtt_iata, val, sizeof(_uplink_creds.mqtt_iata));
 		} else {
-			snprintf(reply, CLI_REPLY_SIZE, "unknown config: uplink.%.*s", key_len, cfg);
+			snprintf(reply, cap, "unknown config: uplink.%.*s", key_len, cfg);
 			return true;
 		}
 
