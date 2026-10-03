@@ -25,9 +25,10 @@ extern "C" {
 /*
  * Probe all declared RTC chips. If one is present and holds a sane time
  * (year >= 2025 and its power-loss flag is clear), store the Unix epoch in
- * *epoch_out and return true. The present chip (valid time or not) is
- * remembered as the write-back target. Returns false if none present or no
- * trustworthy time is held.
+ * *epoch_out and return true. The first chip accepted as an RTC (valid BCD
+ * time, or a power-loss flag read as set) is remembered as the write-back
+ * target, trusted or not. Returns false if none present or no trustworthy
+ * time is held.
  */
 bool zephcore_rtc_restore(uint32_t *epoch_out);
 

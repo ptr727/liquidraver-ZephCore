@@ -51,7 +51,7 @@ static const struct rtc_desc rtc_descs[] = {
 	DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_DESC_ENTRY)
 };
 
-/* Chip we'll read/write going forward (first one found present). */
+/* Chip we'll read/write going forward (first one accepted as an RTC). */
 static const struct rtc_desc *s_active;
 static bool s_probed;
 
@@ -95,8 +95,8 @@ static void civil_from_days(int64_t z, int *y, unsigned *m, unsigned *d)
 	*y = yy + (*m <= 2);
 }
 
-/* Read the chip's power-loss flag. true => held time is unreliable. */
-static bool rtc_time_unreliable(const struct rtc_desc *d, const uint8_t blk[7])
+/* Read the chip's power-loss flag: 1 set, 0 clear, -1 the status read failed. */
+static int rtc_power_lost(const struct rtc_desc *d, const uint8_t blk[7])
 {
 	if (d->status_reg == RTC_STATUS_IN_SECONDS) {
 		return (blk[0] & d->status_mask) != 0;
@@ -104,13 +104,13 @@ static bool rtc_time_unreliable(const struct rtc_desc *d, const uint8_t blk[7])
 
 	uint8_t st;
 	if (i2c_reg_read_byte(d->bus, d->addr, d->status_reg, &st) != 0) {
-		return true;  /* can't confirm => don't trust it */
+		return -1;
 	}
 	return (st & d->status_mask) != 0;
 }
 
-/* Probe all chips once; cache the first present one in s_active. If a present
- * chip holds a sane time, return it via epoch_out. */
+/* Probe all chips once; cache the first one accepted as an RTC in s_active. If
+ * an accepted chip holds a sane time, return it via epoch_out. */
 static bool rtc_probe(uint32_t *epoch_out)
 {
 	for (size_t i = 0; i < ARRAY_SIZE(rtc_descs); i++) {
@@ -126,8 +126,8 @@ static bool rtc_probe(uint32_t *epoch_out)
 
 		/* Mask off flag/century bits. We trust this is a real RTC (vs. an
 		 * unrelated chip sharing the address) if EITHER the block is valid
-		 * BCD, OR the chip's power-loss flag is set — the latter is itself
-		 * proof it's an RTC that lost power and whose time registers may be
+		 * BCD, OR the chip's power-loss flag reads as set — the latter is
+		 * taken as an RTC that lost power and whose time registers may be
 		 * garbage. Adopting in the power-loss case is essential: otherwise a
 		 * battery-depleted RTC (garbage registers, VL/OSF/PORF latched) would
 		 * never become the write-back target, so a sync could never
@@ -139,19 +139,25 @@ static bool rtc_probe(uint32_t *epoch_out)
 			      bcd_field_ok(hb, 23) && bcd_field_ok(db, 31) &&
 			      bcd_field_ok(ob, 12) && bcd_field_ok(yb, 99) &&
 			      BCD2BIN(db) >= 1 && BCD2BIN(ob) >= 1;
-		bool unreliable = rtc_time_unreliable(d, blk);
+		int lost = rtc_power_lost(d, blk);
 
-		if (!bcd_ok && !unreliable) {
+		/* A failed status read is no evidence of a lost-power RTC, and
+		 * adopting on it would write the time into whatever chip this is. */
+		if (!bcd_ok && lost != 1) {
 			continue;  /* neither valid time nor a lost-power RTC => skip */
 		}
+
+		/* Valid time but an unreadable flag: adopt, but do not trust it. */
+		bool unreliable = (lost != 0);
 
 		if (s_active == NULL) {
 			s_active = d;  /* RTC => our write-back target */
 		}
 
 		if (unreliable) {
-			LOG_WRN("%s present, power-loss flag set — clock will be set "
-				"on the next GPS/app/CLI sync", d->name);
+			LOG_WRN("%s present, %s — clock will be set on the next "
+				"GPS/app/CLI sync", d->name,
+				(lost > 0) ? "power-loss flag set" : "status unreadable");
 			continue;
 		}
 
