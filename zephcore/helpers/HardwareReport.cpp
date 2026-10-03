@@ -628,7 +628,7 @@ void section_sensors(Sink *s)
 {
 #if defined(HW_HAS_SENSOR_HDR) && IS_ENABLED(CONFIG_SENSOR)
 	/* One line per part the boot probe found, environment and power
-	 * monitors alike, with the fields its last reading carried. */
+	 * monitors alike, with the fields a fresh read of it returns. */
 	int n = env_sensor_count();
 
 	if (n <= 0) {

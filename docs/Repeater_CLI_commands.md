@@ -55,8 +55,8 @@ commands only from upstream's set, and ZephCore-only commands stay local by desi
 | `hw i2c [start]` | Devicetree-declared I2C inventory. **Not a bus scan** — no bus traffic |
 | `hw i2c scan [start]` | Live scan of 0x08–0x77 on each bus carrying a declared device, naming declared addresses (see the coverage note below) |
 | `hw gps [start]` | GNSS driver compatible, transport, baud, and enable state. A GNSS node, or its UART, disabled in devicetree reports `declared but disabled` (the summary says `disabled`), since the GPS manager does not use it |
-| `hw sensors [start]` | Each sensor the boot probe found, environment and power monitors alike, and the fields it reports |
-| `hw all [start]` | `board`, `rtc`, `i2c`, `gps` and `sensors`, in that order. Not the summary, and not `hw i2c scan`, which puts traffic on the bus |
+| `hw sensors [start]` | Each sensor the boot probe found, environment and power monitors alike, and the fields a fresh read of it returns. Each one is read on the spot, as for a telemetry request |
+| `hw all [start]` | `board`, `rtc`, `i2c`, `gps` and `sensors`, in that order, so it reads each sensor. Not the summary, and not `hw i2c scan`, which probes every address |
 | `hw <anything else>` | Usage string |
 
 `start` is an optional line index for resuming a truncated reply (see **Paging** below).
@@ -119,7 +119,7 @@ Every field is something the firmware *knows*. It never infers:
   NACK is also `-EIO`, and the nRF drivers report any other bus error event the same way, so
   such a failure reads as `absent` too; the drivers give nothing finer. `present` means the
   probe accepted the chip as an RTC, which includes a chip whose time is not valid BCD when its
-  power-loss flag is set or cannot be read, since the first such chip is adopted for write-back
+  power-loss flag is set or cannot be read. The first accepted chip is adopted for write-back
   (marked `*`).
 - A build with no sensor support reports `not compiled in`, which is a different statement
   from a sensor manager that looked and found nothing.
