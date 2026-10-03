@@ -211,9 +211,10 @@ static bool rtc_probe(uint32_t *epoch_out)
 			continue;  /* no ACK => chip absent */
 		}
 
-		/* An RTC resets its time to defined values, never all 0xFF. An erased
-		 * EEPROM sharing the address reads 0xFF everywhere, its "status" too,
-		 * which would otherwise pass as a set power-loss flag. */
+		/* An erased EEPROM sharing the address reads 0xFF everywhere, its
+		 * "status" too, which would otherwise pass as a set power-loss flag.
+		 * A real RTC reading all 0xFF (some leave their time undefined at
+		 * power-on) is skipped too, losing write-back for that boot only. */
 		bool all_ff = true;
 
 		for (size_t k = 0; k < sizeof(blk); k++) {
