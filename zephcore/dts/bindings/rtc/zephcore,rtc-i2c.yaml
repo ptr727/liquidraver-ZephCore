@@ -47,7 +47,9 @@ properties:
     description: >
       RV3028 only. (register, mask, value) triplets for the chip's
       EEPROM-backed configuration registers 0x35 (CLKOUT) to 0x37 (backup
-      switchover and trickle charger); other registers are ignored. A chip
+      switchover and trickle charger), one triplet per register, masking
+      implemented bits only (35h bits 5:4 are not); any other triplet is
+      ignored. A chip
       at the address whose always-zero time bits read 1 is not adopted.
       When the chip is adopted, any
       register whose masked bits differ is updated and committed to the

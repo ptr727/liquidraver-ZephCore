@@ -71,6 +71,8 @@ static const struct rtc_desc rtc_descs[] = {
 /* Chip we'll read/write going forward (first one found present). */
 static const struct rtc_desc *s_active;
 static bool s_probed;
+/* A candidate read all 0xFF and was skipped; see zephcore_rtc_save(). */
+static bool s_skipped_ff;
 
 #define BCD2BIN(x) ((((x) >> 4) & 0x0F) * 10 + ((x) & 0x0F))
 
@@ -165,6 +167,26 @@ static bool rv3028_eeprom_cmd(const struct rtc_desc *d, uint8_t cmd, int32_t wai
 	return rv3028_eeprom_idle(d);
 }
 
+/* A config triplet is used only if its register is 35h-37h, its mask covers
+ * implemented bits only (35h bits 5:4 are not; manual 3.15.4), and no
+ * earlier triplet names the same register. */
+static bool rv3028_cfg_triplet_ok(const struct rtc_desc *d, size_t i)
+{
+	static const uint8_t impl[] = { 0xCF, 0xFF, 0xFF };  /* 35h, 36h, 37h */
+	uint8_t reg = d->cfg[i];
+
+	if (reg < RV3028_REG_CFG_FIRST || reg > RV3028_REG_CFG_LAST ||
+	    (d->cfg[i + 1] & ~impl[reg - RV3028_REG_CFG_FIRST]) != 0) {
+		return false;
+	}
+	for (size_t k = 0; k < i; k += 3) {
+		if (d->cfg[k] == reg) {
+			return false;
+		}
+	}
+	return true;
+}
+
 /* Bits the RV3028 always reads as 0 in its time block (manual 3.2). A chip
  * at an RV3028 descriptor that sets any is not one, and is not adopted. */
 static bool rv3028_time_bits_ok(const uint8_t blk[7])
@@ -179,11 +201,13 @@ static bool rv3028_time_bits_ok(const uint8_t blk[7])
 	return true;
 }
 
-/* Apply the descriptor's rv3028-eeprom-config to the adopted chip, by the
- * manual's procedure (4.6.3, 4.6.9): refresh RAM from EEPROM so the
- * comparison is against what is stored, write only what differs, commit it
- * with the Update command, then read it back. Automatic refresh is held off
- * throughout and always re-enabled. Only 35h-37h are accepted. */
+/* Apply the descriptor's rv3028-eeprom-config to the adopted chip: hold off
+ * automatic refresh (manual 4.6.3, 4.6.9), refresh RAM from EEPROM so the
+ * comparison is against what is stored (4.6.4, as Zephyr's driver does),
+ * write only what differs, commit it with the Update command (4.6.3), and
+ * read it back (ours). Refresh is always re-enabled. A triplet outside
+ * 35h-37h, masking an unimplemented bit, or repeating a register is
+ * ignored, so a devicetree mistake cannot force an Update on every boot. */
 static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
 {
 	bool changed = false, ok = true;
@@ -203,8 +227,8 @@ static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
 		uint8_t old, reg = d->cfg[i], mask = d->cfg[i + 1];
 		uint8_t val = d->cfg[i + 2];
 
-		if (reg < RV3028_REG_CFG_FIRST || reg > RV3028_REG_CFG_LAST) {
-			LOG_WRN("%s: config register 0x%02x ignored", d->name, reg);
+		if (!rv3028_cfg_triplet_ok(d, i)) {
+			LOG_WRN("%s: config triplet for 0x%02x ignored", d->name, reg);
 			continue;
 		}
 		ok = i2c_reg_read_byte(d->bus, d->addr, reg, &old) == 0;
@@ -220,7 +244,7 @@ static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
 	for (size_t i = 0; ok && changed && i + 2 < d->cfg_len; i += 3) {
 		uint8_t now;
 
-		if (d->cfg[i] < RV3028_REG_CFG_FIRST || d->cfg[i] > RV3028_REG_CFG_LAST) {
+		if (!rv3028_cfg_triplet_ok(d, i)) {
 			continue;
 		}
 		ok = i2c_reg_read_byte(d->bus, d->addr, d->cfg[i], &now) == 0 &&
@@ -242,6 +266,8 @@ static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
  * chip holds a sane time, return it via epoch_out. */
 static bool rtc_probe(uint32_t *epoch_out)
 {
+	s_skipped_ff = false;
+
 	for (size_t i = 0; i < ARRAY_SIZE(rtc_descs); i++) {
 		const struct rtc_desc *d = &rtc_descs[i];
 		uint8_t blk[7];
@@ -255,14 +281,15 @@ static bool rtc_probe(uint32_t *epoch_out)
 
 		/* An erased EEPROM sharing the address reads 0xFF everywhere, its
 		 * "status" too, which would otherwise pass as a set power-loss flag.
-		 * A real RTC reading all 0xFF (some leave their time undefined at
-		 * power-on) is skipped too, losing write-back for that boot only. */
+		 * A real RTC can read all 0xFF too (some leave their time undefined
+		 * at power-on), so a later save probes again. */
 		bool all_ff = true;
 
 		for (size_t k = 0; k < sizeof(blk); k++) {
 			all_ff = all_ff && (blk[k] == 0xFF);
 		}
 		if (all_ff) {
+			s_skipped_ff = true;
 			continue;
 		}
 
@@ -340,6 +367,11 @@ void zephcore_rtc_save(uint32_t epoch)
 		/* Restore wasn't run (unexpected) — discover now. */
 		(void)rtc_probe(NULL);
 		s_probed = true;
+	}
+	if (s_active == NULL && s_skipped_ff) {
+		/* An RTC's counter has moved its time off all 0xFF by now; an
+		 * erased EEPROM has not, and is skipped again. */
+		(void)rtc_probe(NULL);
 	}
 	if (s_active == NULL) {
 		return;
