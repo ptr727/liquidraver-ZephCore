@@ -118,9 +118,9 @@ Every field is something the firmware *knows*. It never infers:
   NACK, or that something answered but did not behave like an RTC. On every driver here a data
   NACK is also `-EIO`, and the nRF drivers report any other bus error event the same way, so
   such a failure reads as `absent` too; the drivers give nothing finer. `present` means the
-  probe accepted the chip as an RTC: its time is valid BCD, or its power-loss flag was read as
-  set. A chip with invalid time whose flag cannot be read is `absent`, so it is never adopted
-  and written to. The first accepted chip is adopted for write-back (marked `*`).
+  probe accepted the chip as an RTC, which includes a chip whose time is not valid BCD when its
+  power-loss flag is set or cannot be read, since the first such chip is adopted for write-back
+  (marked `*`).
 - A build with no sensor support reports `not compiled in`, which is a different statement
   from a sensor manager that looked and found nothing.
 
