@@ -125,7 +125,9 @@ static const struct device *usb_dev;
 static uint8_t usb_ring_buf_data[USB_RING_BUF_SIZE];
 static struct ring_buf usb_ring_buf;
 static char cli_line_buf[CLI_LINE_BUF_SIZE];
-static char cli_reply_buf[256];
+/* A local "xx|" prefix takes 3 bytes ahead of the CLI_REPLY_SIZE a handler
+ * may write (RepeaterMesh/RoomServerMesh::handleCommand), as on the companion. */
+static char cli_reply_buf[3 + CLI_REPLY_SIZE];
 static uint16_t cli_line_idx;
 /* Last byte seen by cli_rx_bytes, for collapsing CRLF/LFCR pairs. Persists
  * across calls, so a pair split across two USB packets still
