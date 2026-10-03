@@ -33,8 +33,19 @@ struct rtc_desc {
 	uint8_t  date_index;   /* day-of-month offset in the 7-byte block */
 	uint8_t  status_reg;   /* power-loss flag register, or RTC_STATUS_IN_SECONDS */
 	uint8_t  status_mask;  /* "time unreliable" bit within status_reg */
+	const uint8_t *cfg;    /* rv3028-eeprom-config triplets, or NULL */
+	uint8_t  cfg_len;
 	const char *name;
 };
+
+#define RTC_CFG_NAME(node) _CONCAT(rtc_cfg_, DT_DEP_ORD(node))
+
+#define RTC_CFG_ARRAY(node)                                           \
+	IF_ENABLED(DT_NODE_HAS_PROP(node, rv3028_eeprom_config),      \
+		   (static const uint8_t RTC_CFG_NAME(node)[] =       \
+			    DT_PROP(node, rv3028_eeprom_config);))
+
+DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_CFG_ARRAY)
 
 #define RTC_DESC_ENTRY(node)                                          \
 	{                                                             \
@@ -44,6 +55,10 @@ struct rtc_desc {
 		.date_index  = (uint8_t)DT_PROP(node, date_index),    \
 		.status_reg  = (uint8_t)DT_PROP(node, status_reg),    \
 		.status_mask = (uint8_t)DT_PROP(node, status_mask),   \
+		.cfg         = COND_CODE_1(                           \
+			DT_NODE_HAS_PROP(node, rv3028_eeprom_config),  \
+			(RTC_CFG_NAME(node)), (NULL)),                 \
+		.cfg_len     = DT_PROP_LEN_OR(node, rv3028_eeprom_config, 0), \
 		.name        = DT_NODE_FULL_NAME(node),               \
 	},
 
@@ -56,6 +71,15 @@ static const struct rtc_desc *s_active;
 static bool s_probed;
 
 #define BCD2BIN(x) ((((x) >> 4) & 0x0F) * 10 + ((x) & 0x0F))
+
+/* RV3028 registers for committing configuration to its EEPROM, as Zephyr's
+ * drivers/mfd/mfd_rv3028.c does. */
+#define RV3028_REG_STATUS     0x0E
+#define RV3028_STATUS_EEBUSY  BIT(7)
+#define RV3028_REG_CONTROL1   0x0F
+#define RV3028_CONTROL1_EERD  BIT(3)
+#define RV3028_REG_EE_COMMAND 0x27
+#define RV3028_EE_CMD_UPDATE  0x11  /* all configuration RAM -> EEPROM */
 #define BIN2BCD(x) ((((x) / 10) << 4) | ((x) % 10))
 
 /* A byte is valid BCD if both nibbles are 0-9, and its decoded value fits the
@@ -109,6 +133,69 @@ static bool rtc_time_unreliable(const struct rtc_desc *d, const uint8_t blk[7])
 	return (st & d->status_mask) != 0;
 }
 
+static bool rv3028_eeprom_idle(const struct rtc_desc *d)
+{
+	for (int ms = 0; ms < 100; ms += 10) {
+		uint8_t st;
+
+		if (i2c_reg_read_byte(d->bus, d->addr, RV3028_REG_STATUS, &st) != 0) {
+			return false;
+		}
+		if (!(st & RV3028_STATUS_EEBUSY)) {
+			return true;
+		}
+		k_msleep(10);
+	}
+	return false;
+}
+
+/* Apply the descriptor's rv3028-eeprom-config to the adopted chip. Only a
+ * differing register is written, then RAM is committed to EEPROM with
+ * automatic refresh held off, so an unchanged chip costs no EEPROM write. */
+static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
+{
+	bool changed = false, failed = false;
+
+	if (d->cfg == NULL) {
+		return;
+	}
+	if (i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_CONTROL1,
+				RV3028_CONTROL1_EERD, RV3028_CONTROL1_EERD) != 0 ||
+	    !rv3028_eeprom_idle(d)) {
+		LOG_WRN("%s: config not applied", d->name);
+		return;
+	}
+	for (size_t i = 0; i + 2 < d->cfg_len; i += 3) {
+		uint8_t old, reg = d->cfg[i], mask = d->cfg[i + 1];
+		uint8_t val = d->cfg[i + 2];
+
+		if (i2c_reg_read_byte(d->bus, d->addr, reg, &old) != 0) {
+			failed = true;
+			break;
+		}
+		uint8_t new = (old & ~mask) | (val & mask);
+
+		if (new != old) {
+			if (i2c_reg_write_byte(d->bus, d->addr, reg, new) != 0) {
+				failed = true;
+				break;
+			}
+			changed = true;
+		}
+	}
+	if (failed) {
+		LOG_WRN("%s: config not applied", d->name);
+	} else if (changed &&
+	    i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_EE_COMMAND, 0x00) == 0 &&
+	    i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_EE_COMMAND,
+			       RV3028_EE_CMD_UPDATE) == 0 &&
+	    rv3028_eeprom_idle(d)) {
+		LOG_INF("%s: config committed to EEPROM", d->name);
+	}
+	(void)i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_CONTROL1,
+				  RV3028_CONTROL1_EERD, 0);
+}
+
 /* Probe all chips once; cache the first present one in s_active. If a present
  * chip holds a sane time, return it via epoch_out. */
 static bool rtc_probe(uint32_t *epoch_out)
@@ -159,6 +246,7 @@ static bool rtc_probe(uint32_t *epoch_out)
 
 		if (s_active == NULL) {
 			s_active = d;  /* RTC => our write-back target */
+			rv3028_apply_eeprom_config(d);
 		}
 
 		if (unreliable) {
