@@ -1015,7 +1015,9 @@ void CompanionMesh::onCLICommandRecv(const ContactInfo &contact, mesh::Packet *p
 {
 	markConnectionActive(contact);  // in case this is from a server, and we have a connection
 	if (contact.isRemoteCLIAllowed()) {
-		if (!handleCommand(text, sender_timestamp, reply)) {
+		/* handleCommand() reads a sender_timestamp of 0 as local. This came
+		 * over the air, so it is remote whatever timestamp the sender put. */
+		if (!handleCommand(text, sender_timestamp ? sender_timestamp : 1, reply)) {
 			strcat(reply, "Unknown command");  // reply may have cmd prefix from 'text'
 		}
 	} else {
