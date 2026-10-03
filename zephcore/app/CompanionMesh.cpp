@@ -1949,9 +1949,19 @@ bool CompanionMesh::handleCmdRunCliCommand(const uint8_t *data, size_t len)
 
 		/* A CommonCLI reply can be longer than one companion frame and the
 		 * app protocol has no continuation for this response, so truncate
-		 * rather than drop. */
+		 * rather than drop, and mark the cut so it is not read as complete.
+		 * The marker starts on a UTF-8 character boundary. */
 		size_t rlen = strlen(reply);
-		if (rlen > MAX_FRAME_SIZE - 1) rlen = MAX_FRAME_SIZE - 1;
+		if (rlen > MAX_FRAME_SIZE - 1) {
+			static const char kCut[] = "...";
+			size_t cut = MAX_FRAME_SIZE - sizeof(kCut);
+
+			while (cut > 0 && ((uint8_t)reply[cut] & 0xC0) == 0x80) {
+				cut--;
+			}
+			memcpy(reply + cut, kCut, sizeof(kCut) - 1);
+			rlen = cut + sizeof(kCut) - 1;
+		}
 		writeFrame(rsp, rlen + 1);
 	} else {
 		writeErrFrame(ERR_ILLEGAL_ARG);
