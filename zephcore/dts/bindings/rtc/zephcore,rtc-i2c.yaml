@@ -46,8 +46,10 @@ properties:
     type: uint8-array
     description: >
       RV3028 only. (register, mask, value) triplets for the chip's
-      EEPROM-backed configuration registers, such as 0x35 (CLKOUT) and 0x37
-      (backup switchover and trickle charger). When the chip is adopted, any
+      EEPROM-backed configuration registers 0x35 (CLKOUT) to 0x37 (backup
+      switchover and trickle charger); other registers are ignored. A chip
+      at the address whose always-zero time bits read 1 is not adopted.
+      When the chip is adopted, any
       register whose masked bits differ is updated and committed to the
       chip's EEPROM, so the chip's own refresh from EEPROM keeps it. Set it
       only on a board whose backup supply is known: trickle charging suits

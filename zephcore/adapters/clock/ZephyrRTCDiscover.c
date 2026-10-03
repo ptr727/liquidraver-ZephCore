@@ -83,6 +83,8 @@ static bool s_probed;
 #define RV3028_REG_EE_COMMAND 0x27
 #define RV3028_EE_CMD_UPDATE  0x11  /* all configuration RAM -> EEPROM */
 #define RV3028_EE_CMD_REFRESH 0x12  /* all configuration EEPROM -> RAM */
+#define RV3028_REG_CFG_FIRST  0x35  /* EEPROM Clkout */
+#define RV3028_REG_CFG_LAST   0x37  /* EEPROM Backup */
 #define BIN2BCD(x) ((((x) / 10) << 4) | ((x) % 10))
 
 /* A byte is valid BCD if both nibbles are 0-9, and its decoded value fits the
@@ -151,19 +153,20 @@ static bool rv3028_eeprom_idle(const struct rtc_desc *d)
 	return false;
 }
 
-static bool rv3028_eeprom_cmd(const struct rtc_desc *d, uint8_t cmd)
+/* The manual (4.6.7): wait 10 ms after an EEPROM write or Update, 1 ms after
+ * a read or Refresh, before checking EEbusy. */
+static bool rv3028_eeprom_cmd(const struct rtc_desc *d, uint8_t cmd, int32_t wait_ms)
 {
 	if (i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_EE_COMMAND, 0x00) != 0 ||
 	    i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_EE_COMMAND, cmd) != 0) {
 		return false;
 	}
-	k_msleep(10);  /* the manual: wait 10 ms before checking EEbusy */
+	k_msleep(wait_ms);
 	return rv3028_eeprom_idle(d);
 }
 
-/* Bits the RV3028 always reads as 0 in its time block (24-hour mode). A
- * chip that sets any is not an RV3028, so nothing RV3028-specific is
- * written to it. */
+/* Bits the RV3028 always reads as 0 in its time block (manual 3.2). A chip
+ * at an RV3028 descriptor that sets any is not one, and is not adopted. */
 static bool rv3028_time_bits_ok(const uint8_t blk[7])
 {
 	static const uint8_t zero[7] = { 0x80, 0x80, 0xC0, 0xF8, 0xC0, 0xE0, 0x00 };
@@ -176,20 +179,16 @@ static bool rv3028_time_bits_ok(const uint8_t blk[7])
 	return true;
 }
 
-/* Apply the descriptor's rv3028-eeprom-config to the adopted chip, as Zephyr's
- * drivers/mfd/mfd_rv3028.c does: refresh RAM from EEPROM so the comparison
- * is against what is stored, write only what differs, commit it with the
- * Update command, read it back. Automatic refresh is held off throughout
- * and always re-enabled. */
-static void rv3028_apply_eeprom_config(const struct rtc_desc *d, const uint8_t blk[7])
+/* Apply the descriptor's rv3028-eeprom-config to the adopted chip, by the
+ * manual's procedure (4.6.3, 4.6.9): refresh RAM from EEPROM so the
+ * comparison is against what is stored, write only what differs, commit it
+ * with the Update command, then read it back. Automatic refresh is held off
+ * throughout and always re-enabled. Only 35h-37h are accepted. */
+static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
 {
 	bool changed = false, ok = true;
 
 	if (d->cfg == NULL) {
-		return;
-	}
-	if (!rv3028_time_bits_ok(blk)) {
-		LOG_WRN("%s: not an RV3028, config skipped", d->name);
 		return;
 	}
 	if (!rv3028_eeprom_idle(d) ||
@@ -198,12 +197,16 @@ static void rv3028_apply_eeprom_config(const struct rtc_desc *d, const uint8_t b
 		LOG_WRN("%s: config not applied", d->name);
 		return;
 	}
-	ok = rv3028_eeprom_cmd(d, RV3028_EE_CMD_REFRESH);
+	ok = rv3028_eeprom_cmd(d, RV3028_EE_CMD_REFRESH, 1);
 
 	for (size_t i = 0; ok && i + 2 < d->cfg_len; i += 3) {
 		uint8_t old, reg = d->cfg[i], mask = d->cfg[i + 1];
 		uint8_t val = d->cfg[i + 2];
 
+		if (reg < RV3028_REG_CFG_FIRST || reg > RV3028_REG_CFG_LAST) {
+			LOG_WRN("%s: config register 0x%02x ignored", d->name, reg);
+			continue;
+		}
 		ok = i2c_reg_read_byte(d->bus, d->addr, reg, &old) == 0;
 		if (ok && ((old ^ val) & mask) != 0) {
 			ok = i2c_reg_write_byte(d->bus, d->addr, reg,
@@ -212,11 +215,14 @@ static void rv3028_apply_eeprom_config(const struct rtc_desc *d, const uint8_t b
 		}
 	}
 	if (ok && changed) {
-		ok = rv3028_eeprom_cmd(d, RV3028_EE_CMD_UPDATE);
+		ok = rv3028_eeprom_cmd(d, RV3028_EE_CMD_UPDATE, 10);
 	}
 	for (size_t i = 0; ok && changed && i + 2 < d->cfg_len; i += 3) {
 		uint8_t now;
 
+		if (d->cfg[i] < RV3028_REG_CFG_FIRST || d->cfg[i] > RV3028_REG_CFG_LAST) {
+			continue;
+		}
 		ok = i2c_reg_read_byte(d->bus, d->addr, d->cfg[i], &now) == 0 &&
 		     ((now ^ d->cfg[i + 2]) & d->cfg[i + 1]) == 0;
 	}
@@ -281,9 +287,14 @@ static bool rtc_probe(uint32_t *epoch_out)
 			continue;  /* neither valid time nor a lost-power RTC => skip */
 		}
 
+		if (d->cfg != NULL && !rv3028_time_bits_ok(blk)) {
+			LOG_WRN("%s: not an RV3028, skipped", d->name);
+			continue;
+		}
+
 		if (s_active == NULL) {
 			s_active = d;  /* RTC => our write-back target */
-			rv3028_apply_eeprom_config(d, blk);
+			rv3028_apply_eeprom_config(d);
 		}
 
 		if (unreliable) {
