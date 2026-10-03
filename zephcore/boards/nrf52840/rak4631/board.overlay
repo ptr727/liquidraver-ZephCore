@@ -228,8 +228,10 @@
 		date-index = <4>;
 		status-reg = <0x0e>;   /* status */
 		status-mask = <0x01>;  /* PORF — power-on reset */
-		/* The RAK12002's backup is a supercapacitor: CLKOUT off (0x35
-		 * CLKOE), direct switchover, trickle charge through 3 kOhm (0x37). */
+		/* The RAK12002's backup is a supercapacitor. As the RV-3028-C7
+		 * manual's rechargeable-backup circuit (7.3): CLKOUT off (0x35
+		 * CLKOE, unused), direct switchover with trickle charge through
+		 * 3 kOhm (0x37 TCE, BSM, TCR). */
 		rv3028-eeprom-config = [35 80 00  37 2f 24];
 	};
 };
