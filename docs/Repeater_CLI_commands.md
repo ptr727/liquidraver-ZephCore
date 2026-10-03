@@ -126,10 +126,11 @@ Every field is something the firmware *knows*. It never infers:
 
 ### Paging
 
-A reply is bounded by `CLI_REPLY_SIZE` (256) locally and by `CLI_REMOTE_REPLY_SIZE` (161), less
-any `xx|` reply prefix, over remote admin, since a remote reply rides the caller's LoRa packet
-buffer. On a companion a local reply is bounded by the app's CLI frame (175 bytes) instead,
-because the app path cannot be told apart from the USB console. When a section does not fit,
+A reply is bounded by `CLI_REPLY_SIZE` (256) locally and by `CLI_REMOTE_REPLY_SIZE` (161) over
+remote admin, since a remote reply rides the caller's LoRa packet buffer. On a companion a local
+reply is bounded by the app's CLI frame (175 bytes) instead, because the app path cannot be told
+apart from the USB console. Either bound is less any `xx|` prefix the line carried, local or
+remote. When a section does not fit,
 the reply ends with ` next:N` and `hw <section> N` (or `hw N` for the summary) resumes from that
 line. A single line too long for a whole page, or longer than 159 characters, is cut to fit and ends in `...`, so a resume
 always moves past it. A start index past the last line answers `no line N, the report has M`.

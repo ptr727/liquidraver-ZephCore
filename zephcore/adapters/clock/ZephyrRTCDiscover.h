@@ -72,7 +72,8 @@ struct zephcore_rtc_entry {
 	bool active;                   /* adopted as the write-back target */
 };
 
-/* Number of RTC candidates this board declares in devicetree. 0 if none. */
+/* Number of RTC candidates discovery knows of: those the board declares in
+ * devicetree, or 0 when there are none or autodiscovery is compiled out. */
 size_t zephcore_rtc_declared(void);
 
 /* Fill *out for declared candidate i. False if i is out of range. */
