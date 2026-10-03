@@ -4,6 +4,10 @@
  */
 
 #include "CommonCLI.h"
+#include "HardwareReport.h"
+#if IS_ENABLED(CONFIG_ZEPHCORE_ROLE_COMPANION)
+#include "../adapters/transport/companion_framing.h"
+#endif
 #include "battery_curve.h"
 #include "led_gate.h"
 #include "buzzer_gate.h"
@@ -546,6 +550,25 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 		} else {
 			snprintf(reply, CLI_REPLY_SIZE, "File system erase: Err");
 		}
+	} else if (memcmp(command, "hw", 2) == 0 && (command[2] == '\0' || command[2] == ' ')) {
+		/* replyCap() allows for a remote reply's "xx|" prefix. On a
+		 * companion a local reply may be the app's CLI frame, which carries
+		 * MAX_FRAME_SIZE - 1 bytes and cannot be told apart from the USB
+		 * console here, so page to the frame rather than have it cut the
+		 * resume marker off. */
+		size_t cap = replyCap(sender_timestamp);
+#if IS_ENABLED(CONFIG_ZEPHCORE_ROLE_COMPANION)
+		if (cap > MAX_FRAME_SIZE - 1) {
+			cap = MAX_FRAME_SIZE - 1;
+		}
+#endif
+		/* replyCap() does not take a local request's "xx|" prefix off, but
+		 * every role's handleCommand() has already moved reply past it. */
+		if (sender_timestamp == 0 && _reply_hdr_used < cap) {
+			cap -= _reply_hdr_used;
+		}
+		zephcore_hw::handle(command, reply, cap, sender_timestamp == 0,
+				    _board, _rtc, _callbacks);
 	} else if (memcmp(command, "ver", 3) == 0) {
 		snprintf(reply, CLI_REPLY_SIZE, "%s (Build: %s)", _callbacks->getFirmwareVer(), _callbacks->getBuildDate());
 	} else if (memcmp(command, "board", 5) == 0) {

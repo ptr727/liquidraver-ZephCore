@@ -534,6 +534,7 @@ if(CONFIG_ZEPHCORE_ROLE_REPEATER OR CONFIG_ZEPHCORE_ROLE_ROOM_SERVER)
     helpers/compat/SHA256.cpp
     helpers/compat/ZephyrFS.cpp
     helpers/CommonCLI.cpp
+    helpers/HardwareReport.cpp   # the `hw` command; only CommonCLI reaches it
   )
   # Headless build (e.g. native-Linux SBC): no display/buttons/buzzer, so the
   # real ui_* implementation (helpers/ui-button or helpers/ui-joystick) isn't
@@ -610,6 +611,7 @@ else()
     # must be compiled unconditionally. Builds without CONFIG_LOG/COMPANION_USB/
     # COMPANION_SERIAL (e.g. plain ESP32/S3 companions) failed to link otherwise.
     helpers/CommonCLI.cpp
+    helpers/HardwareReport.cpp   # the `hw` command; only CommonCLI reaches it
   )
   # Companion transports: main_companion.cpp registers every one the build
   # has in upstream's MultiSerialInterface — BLE NUS when there is a
