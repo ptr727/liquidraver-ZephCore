@@ -525,11 +525,7 @@ void section_i2c_scan(Sink *s)
 
 			/* Render the token on its own first, so the decision to
 			 * wrap is made against a known length and an address can
-			 * never fall between the two branches. The previous shape
-			 * -- format into the line, retry once on a fresh line,
-			 * and do nothing if that also failed -- dropped the
-			 * address while found++ had already counted it, so the
-			 * total and the listing disagreed. */
+			 * never be dropped. */
 			char tok[72];
 			int tw = named ? snprintf(tok, sizeof(tok), " 0x%02x(%s)", addr, nm)
 				       : snprintf(tok, sizeof(tok), " 0x%02x", addr);
