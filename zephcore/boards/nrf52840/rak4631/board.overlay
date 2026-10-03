@@ -231,7 +231,10 @@
 		/* The RAK12002's backup is a supercapacitor. As the RV-3028-C7
 		 * manual's rechargeable-backup circuit (7.3): direct switchover
 		 * with trickle charging (0x37 TCE, BSM), TCR at its 3 kOhm delivery
-		 * default; CLKOUT off (0x35 CLKOE), as it is unused. */
+		 * default; CLKOUT off (0x35 CLKOE), as it is unused. 4.2.2 cautions
+		 * that DSM can switch needlessly when VDD and VBACKUP are close; 7.3
+		 * prescribes it for a capacitor anyway, and level switching would
+		 * leave the charge below 2.0 V unused. */
 		rv3028-eeprom-config = [35 80 00  37 2f 24];
 	};
 };

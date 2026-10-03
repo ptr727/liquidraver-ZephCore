@@ -44,7 +44,8 @@ struct rtc_desc {
 	IF_ENABLED(DT_NODE_HAS_PROP(node, rv3028_eeprom_config),      \
 		   (static const uint8_t RTC_CFG_NAME(node)[] =       \
 			    DT_PROP(node, rv3028_eeprom_config);      \
-		    BUILD_ASSERT(sizeof(RTC_CFG_NAME(node)) % 3 == 0, \
+		    BUILD_ASSERT(sizeof(RTC_CFG_NAME(node)) % 3 == 0 &&  \
+				 sizeof(RTC_CFG_NAME(node)) <= UINT8_MAX,  \
 				 "rv3028-eeprom-config is (register, mask, value) triplets");))
 
 DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_CFG_ARRAY)
@@ -71,8 +72,10 @@ static const struct rtc_desc rtc_descs[] = {
 /* Chip we'll read/write going forward (first one found present). */
 static const struct rtc_desc *s_active;
 static bool s_probed;
-/* A candidate read all 0xFF and was skipped; see zephcore_rtc_save(). */
+/* A candidate read all 0xFF and was skipped; zephcore_rtc_save() probes
+ * once more for it, and only once per boot. */
 static bool s_skipped_ff;
+static bool s_reprobed;
 
 #define BCD2BIN(x) ((((x) >> 4) & 0x0F) * 10 + ((x) & 0x0F))
 
@@ -205,7 +208,7 @@ static bool rv3028_time_bits_ok(const uint8_t blk[7])
  * automatic refresh (manual 4.6.3, 4.6.9), refresh RAM from EEPROM so the
  * comparison is against what is stored (4.6.4, as Zephyr's driver does),
  * write only what differs, commit it with the Update command (4.6.3), and
- * read it back (ours). Refresh is always re-enabled. A triplet outside
+ * refresh again and read it back (ours). Refresh is always re-enabled. A triplet outside
  * 35h-37h, masking an unimplemented bit, or repeating a register is
  * ignored, so a devicetree mistake cannot force an Update on every boot. */
 static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
@@ -239,7 +242,10 @@ static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
 		}
 	}
 	if (ok && changed) {
-		ok = rv3028_eeprom_cmd(d, RV3028_EE_CMD_UPDATE, 10);
+		/* Update, then Refresh, so the read-back below sees what the
+		 * EEPROM holds rather than what was written to RAM. */
+		ok = rv3028_eeprom_cmd(d, RV3028_EE_CMD_UPDATE, 10) &&
+		     rv3028_eeprom_cmd(d, RV3028_EE_CMD_REFRESH, 1);
 	}
 	for (size_t i = 0; ok && changed && i + 2 < d->cfg_len; i += 3) {
 		uint8_t now;
@@ -368,9 +374,10 @@ void zephcore_rtc_save(uint32_t epoch)
 		(void)rtc_probe(NULL);
 		s_probed = true;
 	}
-	if (s_active == NULL && s_skipped_ff) {
-		/* An RTC's counter has moved its time off all 0xFF by now; an
+	if (s_active == NULL && s_skipped_ff && !s_reprobed) {
+		/* A running RTC may have counted off all 0xFF since boot; an
 		 * erased EEPROM has not, and is skipped again. */
+		s_reprobed = true;
 		(void)rtc_probe(NULL);
 	}
 	if (s_active == NULL) {
