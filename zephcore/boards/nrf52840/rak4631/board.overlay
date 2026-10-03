@@ -215,6 +215,20 @@
 	};
 
 	#include "../../common/sensors-i2c.dtsi"
+
+	/*
+	 * A WisBlock slot can carry a RAK12002 (RV3028 at 0x52). Only that
+	 * candidate, not all of rtc-i2c.dtsi: its DS3231 at 0x68 shares the
+	 * address of WisBlock IMUs.
+	 */
+	rtc_rv3028: rtc-rv3028@52 {
+		compatible = "zephcore,rtc-i2c";
+		reg = <0x52>;
+		time-reg = <0x00>;
+		date-index = <4>;
+		status-reg = <0x0e>;   /* status */
+		status-mask = <0x01>;  /* PORF — power-on reset */
+	};
 };
 
 /* RAK4631 has BME680, not BME280 — override the common DTSI default */
