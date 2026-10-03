@@ -115,6 +115,8 @@ The board list is one manifest per board (`zephcore.yml`), read by `build.sh`, t
 
 **Rules**
 - R4.1 A board directory declares hardware only (pins, peripherals, partitions, identity), never role policy.
+  One deliberate exception: a board with no display or buttons may compile BLE out (`CONFIG_BT=n`), because
+  nothing on such a board can switch BLE off at runtime (`thinknode_m7`).
 - R4.2 CMake auto-includes a conf only where the combination is otherwise broken (repeater → WiFi OTA on
   S3/C-series; S3 companion → native USB; WiFi-capable companion → WiFi companion; Ethernet-capable
   companion → Ethernet companion).
