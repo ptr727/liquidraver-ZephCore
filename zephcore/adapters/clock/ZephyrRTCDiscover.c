@@ -124,6 +124,18 @@ static bool rtc_probe(uint32_t *epoch_out)
 			continue;  /* no ACK => chip absent */
 		}
 
+		/* An RTC resets its time to defined values, never all 0xFF. An erased
+		 * EEPROM sharing the address reads 0xFF everywhere, its "status" too,
+		 * which would otherwise pass as a set power-loss flag. */
+		bool all_ff = true;
+
+		for (size_t k = 0; k < sizeof(blk); k++) {
+			all_ff = all_ff && (blk[k] == 0xFF);
+		}
+		if (all_ff) {
+			continue;
+		}
+
 		/* Mask off flag/century bits. We trust this is a real RTC (vs. an
 		 * unrelated chip sharing the address) if EITHER the block is valid
 		 * BCD, OR the chip's power-loss flag is set — the latter is itself
