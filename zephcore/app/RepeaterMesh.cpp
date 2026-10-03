@@ -1262,7 +1262,9 @@ void RepeaterMesh::formatNeighborsReply(char* reply) {
     return a->heard_timestamp > b->heard_timestamp;
       });
 
-  for (int i = 0; i < neighbours_count && dp - reply < 134; i++) {
+  /* 133: the longest entry (25 chars) and its terminator still fit a remote
+   * reply behind an "xx|" prefix (CLI_REMOTE_REPLY_SIZE - 3). */
+  for (int i = 0; i < neighbours_count && dp - reply < 133; i++) {
     NeighbourInfo* neighbour = sorted_neighbours[i];
 
     if (i > 0) *dp++ = '\n';
@@ -1375,7 +1377,7 @@ void RepeaterMesh::handleCommand(uint32_t sender_timestamp, char* command, char*
   _cli.setReplyHeaderUsed(hdr_used);
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
-  if (handleUplinkCommand(command, reply)) {
+  if (handleUplinkCommand(command, reply, _cli.replyCap(sender_timestamp))) {
     return;
   }
 #endif
