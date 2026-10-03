@@ -167,7 +167,6 @@
 	status = "okay";
 };
 
-/* Reduce CPU clock from 240 MHz to 160 MHz — saves power, HAL minimum */
 &ledc0 {
 	pinctrl-0 = <&ledc0_default>;
 	pinctrl-names = "default";
