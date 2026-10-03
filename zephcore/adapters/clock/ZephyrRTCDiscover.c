@@ -72,8 +72,8 @@ static const struct rtc_desc rtc_descs[] = {
 /* Chip we'll read/write going forward (first one found present). */
 static const struct rtc_desc *s_active;
 static bool s_probed;
-/* A candidate read all 0xFF and was skipped; zephcore_rtc_save() probes
- * once more for it, and only once per boot. */
+/* A candidate read all 0xFF and was skipped: a later zephcore_rtc_save()
+ * runs the whole probe once more, once per boot. */
 static bool s_skipped_ff;
 static bool s_reprobed;
 
@@ -373,8 +373,7 @@ void zephcore_rtc_save(uint32_t epoch)
 		/* Restore wasn't run (unexpected) — discover now. */
 		(void)rtc_probe(NULL);
 		s_probed = true;
-	}
-	if (s_active == NULL && s_skipped_ff && !s_reprobed) {
+	} else if (s_active == NULL && s_skipped_ff && !s_reprobed) {
 		/* A running RTC may have counted off all 0xFF since boot; an
 		 * erased EEPROM has not, and is skipped again. */
 		s_reprobed = true;
