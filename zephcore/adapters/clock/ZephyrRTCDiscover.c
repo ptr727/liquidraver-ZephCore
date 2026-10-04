@@ -155,26 +155,33 @@ static bool rtc_ruled_out(const struct rtc_desc *d, const uint8_t blk[7])
 
 enum rtc_verdict { RTC_ABSENT, RTC_ERASED, RTC_NOT_THIS, RTC_FOUND, RTC_FOUND_GARBLED };
 
+static bool rtc_all_ff(const uint8_t blk[7])
+{
+	for (size_t k = 0; k < 7; k++) {
+		if (blk[k] != 0xFF) {
+			return false;
+		}
+	}
+	return true;
+}
+
 /* Decide whether the device at d is the RTC it declares. A first read that
- * fails means nothing is there. Otherwise it is ruled out only when two reads
- * each rule it out: a failed second read does not, and an unreadable
- * power-loss flag cannot vouch for the fields. An
- * all-0xFF block is an erased EEPROM, though a real RTC can power up that
- * way, so it is skipped for now. RTC_FOUND leaves the block to decode in blk;
- * RTC_FOUND_GARBLED is this RTC with no clean read to take a time from. */
+ * fails means nothing is there, and one that is all 0xFF is an erased EEPROM,
+ * though a real RTC can power up that way, so it is skipped for now.
+ * Otherwise the device is ruled out only when two reads each rule it out: a
+ * failed second read does not, an all-0xFF second read does, and an
+ * unreadable power-loss flag cannot vouch for the fields. RTC_FOUND leaves
+ * the block to decode in blk; RTC_FOUND_GARBLED is this RTC with no clean
+ * read to take a time from. */
 static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 {
 	uint8_t again[7];
-	bool all_ff = true;
 
 	if (!device_is_ready(d->bus) ||
 	    i2c_burst_read(d->bus, d->addr, d->time_reg, blk, 7) != 0) {
 		return RTC_ABSENT;
 	}
-	for (size_t k = 0; k < 7; k++) {
-		all_ff = all_ff && (blk[k] == 0xFF);
-	}
-	if (all_ff) {
+	if (rtc_all_ff(blk)) {
 		return RTC_ERASED;
 	}
 	if (!rtc_ruled_out(d, blk)) {
@@ -183,7 +190,7 @@ static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 	if (i2c_burst_read(d->bus, d->addr, d->time_reg, again, sizeof(again)) != 0) {
 		return RTC_FOUND_GARBLED;
 	}
-	if (rtc_ruled_out(d, again)) {
+	if (rtc_all_ff(again) || rtc_ruled_out(d, again)) {
 		return RTC_NOT_THIS;
 	}
 	memcpy(blk, again, sizeof(again));
@@ -222,9 +229,12 @@ static bool rtc_probe(uint32_t *epoch_out)
 				"next GPS/app/CLI sync", d->name);
 			continue;
 		}
-		if (rtc_power_flag(d, blk) != 0) {
-			LOG_WRN("%s present, power-loss flag set — clock will be set "
-				"on the next GPS/app/CLI sync", d->name);
+		int flag = rtc_power_flag(d, blk);
+
+		if (flag != 0) {
+			LOG_WRN("%s present, power-loss flag %s — clock will be set "
+				"on the next GPS/app/CLI sync", d->name,
+				flag > 0 ? "set" : "unreadable");
 			continue;
 		}
 
