@@ -31,8 +31,8 @@ extern "C" {
  * save probes again), or if two reads each show it is not that RTC: a bit
  * the descriptor's zero-mask says reads 0 is set, or seconds, minutes, date
  * or month are out of range while the power-loss flag does not read as set
- * (an unreadable flag counts as not set). A failed time-block read never
- * rules a device out.
+ * (an unreadable flag counts as not set). A failed second read never rules
+ * a device out; a failed first read means nothing is there.
  * A time is taken only from a clean read whose hours and year are valid too.
  * Returns false if none present or no trustworthy time is held.
  */

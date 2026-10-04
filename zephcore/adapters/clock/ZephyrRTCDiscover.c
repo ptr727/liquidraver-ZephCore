@@ -35,7 +35,7 @@ struct rtc_desc {
 	uint8_t  date_index;   /* day-of-month offset in the 7-byte block */
 	uint8_t  status_reg;   /* power-loss flag register, or RTC_STATUS_IN_SECONDS */
 	uint8_t  status_mask;  /* "time unreliable" bit within status_reg */
-	const uint8_t *zero;   /* 7 bytes of always-zero bits, or NULL */
+	const uint8_t *zero;   /* 7 bytes of bits the data sheet shows as 0, or NULL */
 	const char *name;
 };
 
@@ -127,11 +127,22 @@ static int rtc_power_flag(const struct rtc_desc *d, const uint8_t blk[7])
 	return (st & d->status_mask) != 0;
 }
 
-/* True if one read shows the device is not this RTC: a bit the chip always
- * reads as 0 is set, or a mode-independent field (seconds, minutes, date,
- * month) is out of range while the power-loss flag does not read as set. The
- * year and hours are not checked: other firmware can leave a year byte past
- * 99 or the chip in 12-hour mode, and the chip is still this RTC. */
+/* Seconds, minutes, date and month in range: the fields that read the same in
+ * 12- and 24-hour mode. */
+static bool rtc_fields_ok(const struct rtc_desc *d, const uint8_t blk[7])
+{
+	uint8_t db = blk[d->date_index] & 0x3F, ob = blk[5] & 0x1F;
+
+	return bcd_field_ok(blk[0] & 0x7F, 59) && bcd_field_ok(blk[1] & 0x7F, 59) &&
+	       bcd_field_ok(db, 31) && BCD2BIN(db) >= 1 &&
+	       bcd_field_ok(ob, 12) && BCD2BIN(ob) >= 1;
+}
+
+/* True if one read shows the device is not this RTC: a bit the data sheet
+ * shows as 0 is set, or rtc_fields_ok() fails while the power-loss flag does
+ * not read as set. The year and hours are not checked: other firmware can
+ * leave a year byte past 99 or the chip in 12-hour mode, and the chip is
+ * still this RTC. */
 static bool rtc_ruled_out(const struct rtc_desc *d, const uint8_t blk[7])
 {
 	for (size_t k = 0; d->zero != NULL && k < 7; k++) {
@@ -139,20 +150,15 @@ static bool rtc_ruled_out(const struct rtc_desc *d, const uint8_t blk[7])
 			return true;
 		}
 	}
-
-	uint8_t db = blk[d->date_index] & 0x3F, ob = blk[5] & 0x1F;
-	bool fields_ok = bcd_field_ok(blk[0] & 0x7F, 59) && bcd_field_ok(blk[1] & 0x7F, 59) &&
-			 bcd_field_ok(db, 31) && BCD2BIN(db) >= 1 &&
-			 bcd_field_ok(ob, 12) && BCD2BIN(ob) >= 1;
-
-	return !fields_ok && rtc_power_flag(d, blk) != 1;
+	return !rtc_fields_ok(d, blk) && rtc_power_flag(d, blk) != 1;
 }
 
 enum rtc_verdict { RTC_ABSENT, RTC_ERASED, RTC_NOT_THIS, RTC_FOUND, RTC_FOUND_GARBLED };
 
-/* Decide whether the device at d is the RTC it declares. A device is ruled
- * out only when two reads each rule it out; a failed time-block read never
- * does, though an unreadable power-loss flag cannot vouch for fields. An
+/* Decide whether the device at d is the RTC it declares. A first read that
+ * fails means nothing is there. Otherwise it is ruled out only when two reads
+ * each rule it out: a failed second read does not, and an unreadable
+ * power-loss flag cannot vouch for the fields. An
  * all-0xFF block is an erased EEPROM, though a real RTC can power up that
  * way, so it is skipped for now. RTC_FOUND leaves the block to decode in blk;
  * RTC_FOUND_GARBLED is this RTC with no clean read to take a time from. */
@@ -225,11 +231,11 @@ static bool rtc_probe(uint32_t *epoch_out)
 		uint8_t sb = blk[0] & 0x7F, mb = blk[1] & 0x7F, hb = blk[2] & 0x3F;
 		uint8_t db = blk[d->date_index] & 0x3F, ob = blk[5] & 0x1F, yb = blk[6];
 
-		/* Identity leaves the hours and year unchecked; a time needs both. */
-		if (!bcd_field_ok(hb, 23) || !bcd_field_ok(yb, 99)) {
-			LOG_WRN("%s present, hours or year unreadable (0x%02x, 0x%02x) — "
-				"clock will be set on the next GPS/app/CLI sync",
-				d->name, blk[2], yb);
+		/* Identity leaves the hours and year unchecked, and may have let the
+		 * other fields pass on a flag read since; a time needs them all. */
+		if (!rtc_fields_ok(d, blk) || !bcd_field_ok(hb, 23) || !bcd_field_ok(yb, 99)) {
+			LOG_WRN("%s present, time unreadable — clock will be set on the "
+				"next GPS/app/CLI sync", d->name);
 			continue;
 		}
 

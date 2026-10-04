@@ -337,7 +337,8 @@
  * the RX8130CE one that rtc-i2c.dtsi assumes for address 0x32: time at 0x00,
  * FLAG at 0x0E, VLF in bit 1. Boot-time discovery passes a device over when
  * two reads both show seconds, minutes, date or month out of range with VLF
- * clear, so most wrong guesses are skipped; there is no zero-mask here. */
+ * not read as set (clear, or the FLAG read failed), so most wrong guesses
+ * are skipped; there is no zero-mask here. */
 &i2c1 {
 	compatible = "nordic,nrf-twim";
 	status = "okay";
