@@ -402,7 +402,10 @@ static bool rtc_probe(uint32_t *epoch_out)
 
 		/* At an RV3028 descriptor, a bit an RV3028 always reads as 0 marks
 		 * some other part. Only the same register showing one on two reads
-		 * rules out an RV3028; a failed second read does not. */
+		 * rules out an RV3028; a failed second read does not. Without a
+		 * clean read the chip is adopted but no time is taken from it. */
+		bool garbled = false;
+
 		if (d->cfg != NULL && !rv3028_time_bits_ok(blk, blk)) {
 			uint8_t again[sizeof(blk)];
 
@@ -413,6 +416,7 @@ static bool rtc_probe(uint32_t *epoch_out)
 				}
 				memcpy(blk, again, sizeof(blk));
 			}
+			garbled = !rv3028_time_bits_ok(blk, blk);
 		}
 
 		/* Mask off flag/century bits. We trust this is a real RTC (vs. an
@@ -432,7 +436,7 @@ static bool rtc_probe(uint32_t *epoch_out)
 			      BCD2BIN(db) >= 1 && BCD2BIN(ob) >= 1;
 		bool unreliable = rtc_time_unreliable(d, blk);
 
-		if (!bcd_ok && !unreliable) {
+		if (!bcd_ok && !unreliable && !garbled) {
 			continue;  /* neither valid time nor a lost-power RTC => skip */
 		}
 
@@ -441,6 +445,11 @@ static bool rtc_probe(uint32_t *epoch_out)
 			rv3028_configure(d);
 		}
 
+		if (garbled) {
+			LOG_WRN("%s present, time unreadable — clock will be set on the "
+				"next GPS/app/CLI sync", d->name);
+			continue;
+		}
 		if (unreliable) {
 			LOG_WRN("%s present, power-loss flag set — clock will be set "
 				"on the next GPS/app/CLI sync", d->name);
