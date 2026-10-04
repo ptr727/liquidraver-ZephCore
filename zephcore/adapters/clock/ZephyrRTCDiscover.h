@@ -25,9 +25,14 @@ extern "C" {
 /*
  * Probe all declared RTC chips. If one is present and holds a sane time
  * (year >= 2025 and its power-loss flag is clear), store the Unix epoch in
- * *epoch_out and return true. The present chip (valid time or not) is
- * remembered as the write-back target. Returns false if none present or no
- * trustworthy time is held.
+ * *epoch_out and return true. The first chip found (valid time or not) is
+ * remembered as the write-back target. A device at a declared address is
+ * passed over if its time block reads all 0xFF (an erased EEPROM; the first
+ * save probes again), or if two reads each show it is not that RTC: a bit
+ * the descriptor's zero-mask says reads 0 is set, or seconds, minutes, date
+ * or month are out of range while the power-loss flag does not read as set.
+ * A time is taken only from a clean read whose hours and year are valid too.
+ * Returns false if none present or no trustworthy time is held.
  */
 bool zephcore_rtc_restore(uint32_t *epoch_out);
 
@@ -35,6 +40,8 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
  * Persist an authoritative epoch to the discovered RTC chip and clear its
  * power-loss flag. No-op if no RTC was discovered. Safe to call often, but
  * intended only for real syncs (GPS/app/CLI), not per-packet clock nudges.
+ * If restore found nothing but skipped an all-0xFF candidate, the first save
+ * probes again, once per boot, in the caller's context.
  */
 void zephcore_rtc_save(uint32_t epoch);
 

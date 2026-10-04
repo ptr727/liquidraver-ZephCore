@@ -17,6 +17,8 @@
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/logging/log.h>
 
+#include <string.h>
+
 LOG_MODULE_REGISTER(zephcore_rtc, CONFIG_ZEPHCORE_DATASTORE_LOG_LEVEL);
 
 #define RTC_COMPAT zephcore_rtc_i2c
@@ -33,8 +35,20 @@ struct rtc_desc {
 	uint8_t  date_index;   /* day-of-month offset in the 7-byte block */
 	uint8_t  status_reg;   /* power-loss flag register, or RTC_STATUS_IN_SECONDS */
 	uint8_t  status_mask;  /* "time unreliable" bit within status_reg */
+	const uint8_t *zero;   /* 7 bytes of always-zero bits, or NULL */
 	const char *name;
 };
+
+#define RTC_ZERO_NAME(node) _CONCAT(rtc_zero_, DT_DEP_ORD(node))
+
+#define RTC_ZERO_ARRAY(node)                                          \
+	IF_ENABLED(DT_NODE_HAS_PROP(node, zero_mask),                 \
+		   (static const uint8_t RTC_ZERO_NAME(node)[] =      \
+			    DT_PROP(node, zero_mask);                 \
+		    BUILD_ASSERT(sizeof(RTC_ZERO_NAME(node)) == 7,     \
+				 "zero-mask is one byte per time register");))
+
+DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_ZERO_ARRAY)
 
 #define RTC_DESC_ENTRY(node)                                          \
 	{                                                             \
@@ -44,6 +58,9 @@ struct rtc_desc {
 		.date_index  = (uint8_t)DT_PROP(node, date_index),    \
 		.status_reg  = (uint8_t)DT_PROP(node, status_reg),    \
 		.status_mask = (uint8_t)DT_PROP(node, status_mask),   \
+		.zero        = COND_CODE_1(                           \
+			DT_NODE_HAS_PROP(node, zero_mask),             \
+			(RTC_ZERO_NAME(node)), (NULL)),                \
 		.name        = DT_NODE_FULL_NAME(node),               \
 	},
 
@@ -54,14 +71,15 @@ static const struct rtc_desc rtc_descs[] = {
 /* Chip we'll read/write going forward (first one found present). */
 static const struct rtc_desc *s_active;
 static bool s_probed;
+/* A candidate read all 0xFF and was skipped: the first save probes again. */
+static bool s_skipped_ff;
+static bool s_reprobed;
 
 #define BCD2BIN(x) ((((x) >> 4) & 0x0F) * 10 + ((x) & 0x0F))
 #define BIN2BCD(x) ((((x) / 10) << 4) | ((x) % 10))
 
 /* A byte is valid BCD if both nibbles are 0-9, and its decoded value fits the
- * field. Used to tell a real RTC apart from an unrelated I2C chip that happens
- * to share an address (e.g. an MPU-class IMU at 0x68, same as DS3231) — we must
- * never adopt and write time into such a device. */
+ * field. */
 static bool bcd_field_ok(uint8_t v, unsigned max)
 {
 	if ((v & 0x0F) > 9 || (v >> 4) > 9) {
@@ -95,8 +113,8 @@ static void civil_from_days(int64_t z, int *y, unsigned *m, unsigned *d)
 	*y = yy + (*m <= 2);
 }
 
-/* Read the chip's power-loss flag. true => held time is unreliable. */
-static bool rtc_time_unreliable(const struct rtc_desc *d, const uint8_t blk[7])
+/* The chip's power-loss flag: 1 set, 0 clear, -1 the status read failed. */
+static int rtc_power_flag(const struct rtc_desc *d, const uint8_t blk[7])
 {
 	if (d->status_reg == RTC_STATUS_IN_SECONDS) {
 		return (blk[0] & d->status_mask) != 0;
@@ -104,54 +122,113 @@ static bool rtc_time_unreliable(const struct rtc_desc *d, const uint8_t blk[7])
 
 	uint8_t st;
 	if (i2c_reg_read_byte(d->bus, d->addr, d->status_reg, &st) != 0) {
-		return true;  /* can't confirm => don't trust it */
+		return -1;
 	}
 	return (st & d->status_mask) != 0;
 }
 
-/* Probe all chips once; cache the first present one in s_active. If a present
+/* True if one read shows the device is not this RTC: a bit the chip always
+ * reads as 0 is set, or a mode-independent field (seconds, minutes, date,
+ * month) is out of range while the power-loss flag does not read as set. The
+ * year and hours are not checked: other firmware can leave a year byte past
+ * 99 or the chip in 12-hour mode, and the chip is still this RTC. */
+static bool rtc_ruled_out(const struct rtc_desc *d, const uint8_t blk[7])
+{
+	for (size_t k = 0; d->zero != NULL && k < 7; k++) {
+		if (blk[k] & d->zero[k]) {
+			return true;
+		}
+	}
+
+	uint8_t db = blk[d->date_index] & 0x3F, ob = blk[5] & 0x1F;
+	bool fields_ok = bcd_field_ok(blk[0] & 0x7F, 59) && bcd_field_ok(blk[1] & 0x7F, 59) &&
+			 bcd_field_ok(db, 31) && BCD2BIN(db) >= 1 &&
+			 bcd_field_ok(ob, 12) && BCD2BIN(ob) >= 1;
+
+	return !fields_ok && rtc_power_flag(d, blk) != 1;
+}
+
+enum rtc_verdict { RTC_ABSENT, RTC_ERASED, RTC_NOT_THIS, RTC_FOUND, RTC_FOUND_GARBLED };
+
+/* Decide whether the device at d is the RTC it declares. A device is ruled
+ * out only when two reads each rule it out; a failed read never does. An
+ * all-0xFF block is an erased EEPROM, though a real RTC can power up that
+ * way, so it is skipped for now. RTC_FOUND leaves the block to decode in blk;
+ * RTC_FOUND_GARBLED is this RTC with no clean read to take a time from. */
+static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
+{
+	uint8_t again[7];
+	bool all_ff = true;
+
+	if (!device_is_ready(d->bus) ||
+	    i2c_burst_read(d->bus, d->addr, d->time_reg, blk, 7) != 0) {
+		return RTC_ABSENT;
+	}
+	for (size_t k = 0; k < 7; k++) {
+		all_ff = all_ff && (blk[k] == 0xFF);
+	}
+	if (all_ff) {
+		return RTC_ERASED;
+	}
+	if (!rtc_ruled_out(d, blk)) {
+		return RTC_FOUND;
+	}
+	if (i2c_burst_read(d->bus, d->addr, d->time_reg, again, sizeof(again)) != 0) {
+		return RTC_FOUND_GARBLED;
+	}
+	if (rtc_ruled_out(d, again)) {
+		return RTC_NOT_THIS;
+	}
+	memcpy(blk, again, sizeof(again));
+	return RTC_FOUND;
+}
+
+/* Probe all chips once; cache the first one found in s_active. If a found
  * chip holds a sane time, return it via epoch_out. */
 static bool rtc_probe(uint32_t *epoch_out)
 {
+	s_skipped_ff = false;
+
 	for (size_t i = 0; i < ARRAY_SIZE(rtc_descs); i++) {
 		const struct rtc_desc *d = &rtc_descs[i];
 		uint8_t blk[7];
+		enum rtc_verdict v = rtc_identify(d, blk);
 
-		if (!device_is_ready(d->bus)) {
+		if (v == RTC_ERASED) {
+			s_skipped_ff = true;
 			continue;
 		}
-		if (i2c_burst_read(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) != 0) {
-			continue;  /* no ACK => chip absent */
+		if (v == RTC_NOT_THIS) {
+			LOG_INF("%s: device at the address is not this RTC, skipped", d->name);
+			continue;
 		}
-
-		/* Mask off flag/century bits. We trust this is a real RTC (vs. an
-		 * unrelated chip sharing the address) if EITHER the block is valid
-		 * BCD, OR the chip's power-loss flag is set — the latter is itself
-		 * proof it's an RTC that lost power and whose time registers may be
-		 * garbage. Adopting in the power-loss case is essential: otherwise a
-		 * battery-depleted RTC (garbage registers, VL/OSF/PORF latched) would
-		 * never become the write-back target, so a sync could never
-		 * re-initialise it and the clock would stay blank forever. */
-		uint8_t sb = blk[0] & 0x7F, mb = blk[1] & 0x7F, hb = blk[2] & 0x3F;
-		uint8_t db = blk[d->date_index] & 0x3F, ob = blk[5] & 0x1F, yb = blk[6];
-
-		bool bcd_ok = bcd_field_ok(sb, 59) && bcd_field_ok(mb, 59) &&
-			      bcd_field_ok(hb, 23) && bcd_field_ok(db, 31) &&
-			      bcd_field_ok(ob, 12) && bcd_field_ok(yb, 99) &&
-			      BCD2BIN(db) >= 1 && BCD2BIN(ob) >= 1;
-		bool unreliable = rtc_time_unreliable(d, blk);
-
-		if (!bcd_ok && !unreliable) {
-			continue;  /* neither valid time nor a lost-power RTC => skip */
+		if (v == RTC_ABSENT) {
+			continue;
 		}
 
 		if (s_active == NULL) {
 			s_active = d;  /* RTC => our write-back target */
 		}
 
-		if (unreliable) {
+		if (v == RTC_FOUND_GARBLED) {
+			LOG_WRN("%s present, time unreadable — clock will be set on the "
+				"next GPS/app/CLI sync", d->name);
+			continue;
+		}
+		if (rtc_power_flag(d, blk) != 0) {
 			LOG_WRN("%s present, power-loss flag set — clock will be set "
 				"on the next GPS/app/CLI sync", d->name);
+			continue;
+		}
+
+		uint8_t sb = blk[0] & 0x7F, mb = blk[1] & 0x7F, hb = blk[2] & 0x3F;
+		uint8_t db = blk[d->date_index] & 0x3F, ob = blk[5] & 0x1F, yb = blk[6];
+
+		/* Identity leaves the hours and year unchecked; a time needs both. */
+		if (!bcd_field_ok(hb, 23) || !bcd_field_ok(yb, 99)) {
+			LOG_WRN("%s present, hours or year unreadable (0x%02x, 0x%02x) — "
+				"clock will be set on the next GPS/app/CLI sync",
+				d->name, blk[2], yb);
 			continue;
 		}
 
@@ -172,9 +249,9 @@ static bool rtc_probe(uint32_t *epoch_out)
 			    hour * 3600 + min * 60 + sec;
 		if (epoch_out) {
 			*epoch_out = (uint32_t)e;
+			LOG_INF("RTC %s: restored %04u-%02u-%02u %02u:%02u:%02u UTC",
+				d->name, year, month, day, hour, min, sec);
 		}
-		LOG_INF("RTC %s: restored %04u-%02u-%02u %02u:%02u:%02u UTC",
-			d->name, year, month, day, hour, min, sec);
 		return true;
 	}
 	return false;
@@ -192,6 +269,11 @@ void zephcore_rtc_save(uint32_t epoch)
 		/* Restore wasn't run (unexpected) — discover now. */
 		(void)rtc_probe(NULL);
 		s_probed = true;
+	} else if (s_active == NULL && s_skipped_ff && !s_reprobed) {
+		/* A running RTC may have counted off all 0xFF since boot; an
+		 * erased EEPROM has not, and is skipped again. */
+		s_reprobed = true;
+		(void)rtc_probe(NULL);
 	}
 	if (s_active == NULL) {
 		return;
