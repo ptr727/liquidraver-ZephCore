@@ -71,7 +71,8 @@ static const struct rtc_desc rtc_descs[] = {
 /* Chip we'll read/write going forward (first one found present). */
 static const struct rtc_desc *s_active;
 static bool s_probed;
-/* A candidate read all 0xFF and was skipped: the first save probes again. */
+/* A candidate's first read was all 0xFF and it was skipped: if nothing was
+ * adopted, the first save probes again. */
 static bool s_skipped_ff;
 static bool s_reprobed;
 
@@ -197,8 +198,8 @@ static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 	return RTC_FOUND;
 }
 
-/* Probe all chips once; cache the first one found in s_active. If a found
- * chip holds a sane time, return it via epoch_out. */
+/* Probe the chips in order; cache the first one found in s_active. Stop at
+ * the first that holds a sane time, returned via epoch_out. */
 static bool rtc_probe(uint32_t *epoch_out)
 {
 	s_skipped_ff = false;
