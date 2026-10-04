@@ -17,6 +17,8 @@
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/logging/log.h>
 
+#include <string.h>
+
 LOG_MODULE_REGISTER(zephcore_rtc, CONFIG_ZEPHCORE_DATASTORE_LOG_LEVEL);
 
 #define RTC_COMPAT zephcore_rtc_i2c
@@ -212,14 +214,14 @@ static bool rv3028_cfg_triplet_ok(const struct rtc_desc *d, size_t i)
 	return true;
 }
 
-/* Bits the RV3028 always reads as 0 in its time block (manual 3.2). A chip
- * at an RV3028 descriptor that sets any is not one, and is not adopted. */
-static bool rv3028_time_bits_ok(const uint8_t blk[7])
+/* Bits the RV3028 always reads as 0 in its time block (manual 3.2). False if
+ * one is set in the same register of both reads a and b: not an RV3028. */
+static bool rv3028_time_bits_ok(const uint8_t a[7], const uint8_t b[7])
 {
 	static const uint8_t zero[7] = { 0x80, 0x80, 0xC0, 0xF8, 0xC0, 0xE0, 0x00 };
 
 	for (size_t k = 0; k < 7; k++) {
-		if (blk[k] & zero[k]) {
+		if ((a[k] & zero[k]) && (b[k] & zero[k])) {
 			return false;
 		}
 	}
@@ -245,8 +247,11 @@ static uint8_t rv3028_cfg_backup_ram(const struct rtc_desc *d, uint8_t ram)
  * switching back to the stored BSM, and the config is read back on every run.
  * A triplet outside 35h-37h, masking an unimplemented bit, or repeating a
  * register is ignored, so a devicetree mistake cannot write on every boot.
- * Returns false if the config was not confirmed, or EERD was not cleared. */
-static bool rv3028_store_config(const struct rtc_desc *d)
+ * Reports whether the config was confirmed, and if so whether EERD, which
+ * also stops the daily refresh, was cleared afterwards. */
+enum rv3028_store { RV3028_STORED, RV3028_EERD_SET, RV3028_NOT_STORED };
+
+static enum rv3028_store rv3028_store_config(const struct rtc_desc *d)
 {
 	bool changed = false, held = false, refreshed = false, ok;
 	uint8_t backup = 0;
@@ -293,14 +298,14 @@ static bool rv3028_store_config(const struct rtc_desc *d)
 		(void)i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_CFG_LAST,
 					 rv3028_cfg_backup_ram(d, backup));
 	}
-	if (i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_CONTROL1,
-				RV3028_CONTROL1_EERD, 0) != 0) {
-		ok = false;
-	}
 	if (ok && changed) {
 		LOG_INF("%s: config committed to EEPROM", d->name);
 	}
-	return ok;
+	if (i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_CONTROL1,
+				RV3028_CONTROL1_EERD, 0) != 0) {
+		return ok ? RV3028_EERD_SET : RV3028_NOT_STORED;
+	}
+	return ok ? RV3028_STORED : RV3028_NOT_STORED;
 }
 
 /* Set the config in the RAM mirror only, which lasts until the next refresh. */
@@ -340,14 +345,19 @@ static void rv3028_configure(const struct rtc_desc *d)
 		return;
 	}
 	s_cfg_tries++;
-	if (rv3028_store_config(d)) {
+	switch (rv3028_store_config(d)) {
+	case RV3028_STORED:
 		return;
+	case RV3028_EERD_SET:
+		LOG_WRN("%s: config stored, but EERD still set, so no daily refresh "
+			"(attempt %u)", d->name, s_cfg_tries);
+		break;
+	case RV3028_NOT_STORED:
+		(void)rv3028_eeprom_idle(d);
+		LOG_WRN("%s: config not stored in EEPROM, %s in RAM (attempt %u)", d->name,
+			rv3028_set_ram(d) ? "set" : "NOT set", s_cfg_tries);
+		break;
 	}
-	(void)rv3028_eeprom_idle(d);
-	bool ram = rv3028_set_ram(d);
-
-	LOG_WRN("%s: config not stored in EEPROM, %s in RAM (attempt %u)", d->name,
-		ram ? "set" : "NOT set", s_cfg_tries);
 	if (s_cfg_tries <= RTC_CFG_RETRIES) {
 		k_work_schedule(&s_cfg_retry, RTC_CFG_RETRY);
 	}
@@ -391,14 +401,17 @@ static bool rtc_probe(uint32_t *epoch_out)
 		}
 
 		/* At an RV3028 descriptor, a bit an RV3028 always reads as 0 marks
-		 * some other part. Only two reads that agree rule out an RV3028. */
-		if (d->cfg != NULL && !rv3028_time_bits_ok(blk)) {
-			if (i2c_burst_read(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) != 0) {
-				continue;
-			}
-			if (!rv3028_time_bits_ok(blk)) {
-				LOG_WRN("%s: not an RV3028, skipped", d->name);
-				continue;
+		 * some other part. Only the same register showing one on two reads
+		 * rules out an RV3028; a failed second read does not. */
+		if (d->cfg != NULL && !rv3028_time_bits_ok(blk, blk)) {
+			uint8_t again[sizeof(blk)];
+
+			if (i2c_burst_read(d->bus, d->addr, d->time_reg, again, sizeof(again)) == 0) {
+				if (!rv3028_time_bits_ok(blk, again)) {
+					LOG_WRN("%s: not an RV3028, skipped", d->name);
+					continue;
+				}
+				memcpy(blk, again, sizeof(blk));
 			}
 		}
 

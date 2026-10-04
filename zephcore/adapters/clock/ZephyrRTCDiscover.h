@@ -27,13 +27,15 @@ extern "C" {
  * Probe all declared RTC chips. If one is present and holds a sane time
  * (year >= 2025 and its power-loss flag is clear), store the Unix epoch in
  * *epoch_out and return true. The first chip that reads as an RTC (valid BCD
- * time, or its power-loss flag set; never all 0xFF, nor, at a descriptor with
- * rv3028-eeprom-config, with an RV3028 always-zero bit set on two reads) is
- * remembered as the write-back target, valid time or not. Adopting one with
+ * time, or its power-loss flag set or unreadable; never all 0xFF, nor, at a
+ * descriptor with rv3028-eeprom-config, with an RV3028 always-zero bit set
+ * in the same register on two reads) is remembered as the write-back
+ * target, valid time or not. Adopting one with
  * rv3028-eeprom-config first waits out the chip's power-on refresh (up to
  * ~66 ms), then turns its backup switchover off while it reads the EEPROM
- * and refreshes RAM from it (a few ms) and writes each byte that differs
- * (~16 ms each). If that store fails, the config is set in RAM, which lasts
+ * and refreshes RAM from it, and writes each byte that differs (~16 ms
+ * each): about 14 ms on a RAK4631 when nothing is written, 52 ms for two
+ * bytes, plus up to 2 ms for switchover to take effect again (4.2.2). If that store fails, the config is set in RAM, which lasts
  * until the chip's next daily refresh, and the store is retried on the
  * system work queue every 10 minutes, at most 3 times.
  * Returns false if none present or no trustworthy time is held.
