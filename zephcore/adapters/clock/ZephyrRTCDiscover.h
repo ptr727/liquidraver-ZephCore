@@ -42,7 +42,8 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
  * power-loss flag. No-op if no RTC was discovered. Safe to call often, but
  * intended only for real syncs (GPS/app/CLI), not per-packet clock nudges.
  * If restore adopted nothing but skipped an all-0xFF candidate, the first
- * save probes again, once per boot, in the caller's context.
+ * save probes again, once per boot, in the caller's context. If an RV3028's
+ * config step did not complete, each save runs it again until it does.
  */
 void zephcore_rtc_save(uint32_t epoch);
 
