@@ -76,8 +76,11 @@ static bool s_probed;
  * runs the whole probe once more, once per boot. */
 static bool s_skipped_ff;
 static bool s_reprobed;
-/* The RV3028 config step did not complete: each save runs it again. */
+/* The RV3028 config step did not complete: a save runs it again, up to
+ * RTC_CFG_RERUNS times per boot. */
+#define RTC_CFG_RERUNS 3
 static bool s_cfg_pending;
+static uint8_t s_cfg_reruns;
 
 #define BCD2BIN(x) ((((x) >> 4) & 0x0F) * 10 + ((x) & 0x0F))
 
@@ -224,6 +227,17 @@ static bool rv3028_time_bits_ok(const uint8_t blk[7])
 	return true;
 }
 
+/* RAM 37h with the configured 37h bits applied, or as it was if none are. */
+static uint8_t rv3028_cfg_backup_ram(const struct rtc_desc *d, uint8_t ram)
+{
+	for (size_t i = 0; i + 2 < d->cfg_len; i += 3) {
+		if (d->cfg[i] == RV3028_REG_CFG_LAST && rv3028_cfg_triplet_ok(d, i)) {
+			return (ram & ~d->cfg[i + 1]) | (d->cfg[i + 2] & d->cfg[i + 1]);
+		}
+	}
+	return ram;
+}
+
 /* Apply the descriptor's rv3028-eeprom-config to the adopted chip. The
  * EEPROM is only touched with automatic refresh held off (4.6.7) and backup
  * switchover disabled in RAM (3.15.6: BSM 00 for any EEPROM read or write).
@@ -277,12 +291,11 @@ static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
 		     ((now ^ d->cfg[i + 2]) & d->cfg[i + 1]) == 0;
 	}
 
-	/* The Refresh did not run or did not finish: try it once more, as it
-	 * also restores the stored switchover mode, else put back the mode the
-	 * chip had rather than leave switchover disabled. */
-	if (held && !refreshed &&
-	    !rv3028_eeprom_cmd(d, RV3028_EE_CMD_REFRESH, 1)) {
-		(void)i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_CFG_LAST, backup);
+	/* The Refresh did not run or did not finish, so RAM may still hold BSM
+	 * 00. Write 37h as configured: RAM only, and never an older value. */
+	if (held && !refreshed) {
+		(void)i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_CFG_LAST,
+					 rv3028_cfg_backup_ram(d, backup));
 	}
 	if (i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_CONTROL1,
 				RV3028_CONTROL1_EERD, 0) != 0) {
@@ -290,7 +303,7 @@ static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
 	}
 	s_cfg_pending = !ok;
 	if (!ok) {
-		LOG_WRN("%s: config not applied, retried on the next save", d->name);
+		LOG_WRN("%s: config not applied", d->name);
 	} else if (changed) {
 		LOG_INF("%s: config committed to EEPROM", d->name);
 	}
@@ -397,7 +410,8 @@ bool zephcore_rtc_restore(uint32_t *epoch_out)
 
 void zephcore_rtc_save(uint32_t epoch)
 {
-	if (s_active != NULL && s_cfg_pending) {
+	if (s_active != NULL && s_cfg_pending && s_cfg_reruns < RTC_CFG_RERUNS) {
+		s_cfg_reruns++;
 		rv3028_apply_eeprom_config(s_active);
 	}
 	if (!s_probed) {
