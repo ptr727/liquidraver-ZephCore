@@ -79,17 +79,20 @@ static bool s_reprobed;
 
 #define BCD2BIN(x) ((((x) >> 4) & 0x0F) * 10 + ((x) & 0x0F))
 
-/* RV3028 registers for committing configuration to its EEPROM, as Zephyr's
- * drivers/mfd/mfd_rv3028.c does. */
+/* RV3028 registers for reading and writing its configuration EEPROM. */
 #define RV3028_REG_STATUS     0x0E
 #define RV3028_STATUS_EEBUSY  BIT(7)
 #define RV3028_REG_CONTROL1   0x0F
 #define RV3028_CONTROL1_EERD  BIT(3)
+#define RV3028_REG_EE_ADDR    0x25
+#define RV3028_REG_EE_DATA    0x26
 #define RV3028_REG_EE_COMMAND 0x27
-#define RV3028_EE_CMD_UPDATE  0x11  /* all configuration RAM -> EEPROM */
 #define RV3028_EE_CMD_REFRESH 0x12  /* all configuration EEPROM -> RAM */
+#define RV3028_EE_CMD_WRITE   0x21  /* EEDATA -> one EEPROM byte */
+#define RV3028_EE_CMD_READ    0x22  /* one EEPROM byte -> EEDATA */
 #define RV3028_REG_CFG_FIRST  0x35  /* EEPROM Clkout */
 #define RV3028_REG_CFG_LAST   0x37  /* EEPROM Backup */
+#define RV3028_BACKUP_BSM     0x0C  /* 37h switchover mode; 00 = disabled */
 #define BIN2BCD(x) ((((x) / 10) << 4) | ((x) % 10))
 
 /* A byte is valid BCD if both nibbles are 0-9, and its decoded value fits the
@@ -143,23 +146,23 @@ static bool rtc_time_unreliable(const struct rtc_desc *d, const uint8_t blk[7])
 	return (st & d->status_mask) != 0;
 }
 
-/* Wait for EEbusy to clear: ~66 ms after power-on, ~63 ms for an Update. */
+/* Wait for EEbusy to clear: ~66 ms after power-on, ~16 ms for a byte write. */
 static bool rv3028_eeprom_idle(const struct rtc_desc *d)
 {
-	for (int ms = 0; ms <= 100; ms += 10) {
+	for (int ms = 0; ms <= 100; ms++) {
 		uint8_t st;
 
 		if (i2c_reg_read_byte(d->bus, d->addr, RV3028_REG_STATUS, &st) == 0 &&
 		    !(st & RV3028_STATUS_EEBUSY)) {
 			return true;
 		}
-		k_msleep(10);
+		k_msleep(1);
 	}
 	return false;
 }
 
-/* The manual (4.6.7): wait 10 ms after an EEPROM write or Update, 1 ms after
- * a read or Refresh, before checking EEbusy. */
+/* The manual (4.6.7): wait 10 ms after an EEPROM write, 1 ms after a read or
+ * Refresh, before checking EEbusy. */
 static bool rv3028_eeprom_cmd(const struct rtc_desc *d, uint8_t cmd, int32_t wait_ms)
 {
 	if (i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_EE_COMMAND, 0x00) != 0 ||
@@ -168,6 +171,21 @@ static bool rv3028_eeprom_cmd(const struct rtc_desc *d, uint8_t cmd, int32_t wai
 	}
 	k_msleep(wait_ms);
 	return rv3028_eeprom_idle(d);
+}
+
+/* One EEPROM byte, read (4.6.6) or written (4.6.5). */
+static bool rv3028_eeprom_read(const struct rtc_desc *d, uint8_t reg, uint8_t *val)
+{
+	return i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_EE_ADDR, reg) == 0 &&
+	       rv3028_eeprom_cmd(d, RV3028_EE_CMD_READ, 1) &&
+	       i2c_reg_read_byte(d->bus, d->addr, RV3028_REG_EE_DATA, val) == 0;
+}
+
+static bool rv3028_eeprom_write(const struct rtc_desc *d, uint8_t reg, uint8_t val)
+{
+	return i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_EE_ADDR, reg) == 0 &&
+	       i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_EE_DATA, val) == 0 &&
+	       rv3028_eeprom_cmd(d, RV3028_EE_CMD_WRITE, 10);
 }
 
 /* A config triplet is used only if its register is 35h-37h, its mask covers
@@ -204,27 +222,31 @@ static bool rv3028_time_bits_ok(const uint8_t blk[7])
 	return true;
 }
 
-/* Apply the descriptor's rv3028-eeprom-config to the adopted chip: hold off
- * automatic refresh (manual 4.6.3, 4.6.9), refresh RAM from EEPROM so the
- * comparison is against what is stored (4.6.4, as Zephyr's driver does),
- * write only what differs, commit it with the Update command (4.6.3), and
- * refresh again and read it back (ours). Refresh is always re-enabled. A triplet outside
- * 35h-37h, masking an unimplemented bit, or repeating a register is
- * ignored, so a devicetree mistake cannot force an Update on every boot. */
+/* Apply the descriptor's rv3028-eeprom-config to the adopted chip. The
+ * EEPROM is only touched with automatic refresh held off (4.6.7) and backup
+ * switchover disabled in RAM (3.15.6: BSM 00 for any EEPROM read or write).
+ * Each byte is compared against the EEPROM itself (4.6.6) and written only if
+ * it differs (4.6.5). A closing Refresh (4.6.4) reloads RAM from the EEPROM,
+ * switching back to the stored BSM, and what was written is read back. A
+ * triplet outside 35h-37h, masking an unimplemented bit, or repeating a
+ * register is ignored, so a devicetree mistake cannot write on every boot. */
 static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
 {
-	bool changed = false, ok = true;
+	bool changed = false, held = false, refreshed = false, ok;
+	uint8_t backup = 0;
 
 	if (d->cfg == NULL) {
 		return;
 	}
-	if (!rv3028_eeprom_idle(d) ||
-	    i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_CONTROL1,
-				RV3028_CONTROL1_EERD, RV3028_CONTROL1_EERD) != 0) {
-		LOG_WRN("%s: config not applied", d->name);
-		return;
+	ok = i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_CONTROL1,
+				 RV3028_CONTROL1_EERD, RV3028_CONTROL1_EERD) == 0 &&
+	     rv3028_eeprom_idle(d) &&
+	     i2c_reg_read_byte(d->bus, d->addr, RV3028_REG_CFG_LAST, &backup) == 0;
+	if (ok) {
+		held = true;
+		ok = i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_CFG_LAST,
+					backup & ~RV3028_BACKUP_BSM) == 0;
 	}
-	ok = rv3028_eeprom_cmd(d, RV3028_EE_CMD_REFRESH, 1);
 
 	for (size_t i = 0; ok && i + 2 < d->cfg_len; i += 3) {
 		uint8_t old, reg = d->cfg[i], mask = d->cfg[i + 1];
@@ -234,18 +256,14 @@ static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
 			LOG_WRN("%s: config triplet for 0x%02x ignored", d->name, reg);
 			continue;
 		}
-		ok = i2c_reg_read_byte(d->bus, d->addr, reg, &old) == 0;
+		ok = rv3028_eeprom_read(d, reg, &old);
 		if (ok && ((old ^ val) & mask) != 0) {
-			ok = i2c_reg_write_byte(d->bus, d->addr, reg,
-						(old & ~mask) | (val & mask)) == 0;
+			ok = rv3028_eeprom_write(d, reg, (old & ~mask) | (val & mask));
 			changed = true;
 		}
 	}
-	if (ok && changed) {
-		/* Update, then Refresh, so the read-back below sees what the
-		 * EEPROM holds rather than what was written to RAM. */
-		ok = rv3028_eeprom_cmd(d, RV3028_EE_CMD_UPDATE, 10) &&
-		     rv3028_eeprom_cmd(d, RV3028_EE_CMD_REFRESH, 1);
+	if (ok) {
+		ok = refreshed = rv3028_eeprom_cmd(d, RV3028_EE_CMD_REFRESH, 1);
 	}
 	for (size_t i = 0; ok && changed && i + 2 < d->cfg_len; i += 3) {
 		uint8_t now;
@@ -257,6 +275,11 @@ static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
 		     ((now ^ d->cfg[i + 2]) & d->cfg[i + 1]) == 0;
 	}
 
+	/* The Refresh did not run or did not finish: put the switchover mode
+	 * back as it was rather than leave it disabled. */
+	if (held && !refreshed) {
+		(void)i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_CFG_LAST, backup);
+	}
 	if (i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_CONTROL1,
 				RV3028_CONTROL1_EERD, 0) != 0) {
 		ok = false;

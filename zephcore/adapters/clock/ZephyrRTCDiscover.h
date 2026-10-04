@@ -29,7 +29,8 @@ extern "C" {
  * *epoch_out and return true. The first chip that reads as an RTC (valid BCD
  * time, or its power-loss flag set; never all 0xFF) is remembered as the
  * write-back target, valid time or not. If its descriptor carries
- * rv3028-eeprom-config, adopting it can write the chip's EEPROM (about 70 ms).
+ * rv3028-eeprom-config, adopting it reads the chip's EEPROM (a few ms) and
+ * writes each byte that differs (about 16 ms each).
  * Returns false if none present or no trustworthy time is held.
  */
 bool zephcore_rtc_restore(uint32_t *epoch_out);
