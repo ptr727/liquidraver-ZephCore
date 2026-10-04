@@ -76,6 +76,10 @@ static bool s_probed;
  * runs the whole probe once more, once per boot. */
 static bool s_skipped_ff;
 static bool s_reprobed;
+/* What a failed config step could not put back on the RV3028, retried on
+ * each save: the saved 37h (switchover mode) and automatic refresh. */
+static bool s_bsm_pending, s_eerd_pending;
+static uint8_t s_bsm_saved;
 
 #define BCD2BIN(x) ((((x) >> 4) & 0x0F) * 10 + ((x) & 0x0F))
 
@@ -222,6 +226,20 @@ static bool rv3028_time_bits_ok(const uint8_t blk[7])
 	return true;
 }
 
+static bool rv3028_release(const struct rtc_desc *d)
+{
+	if (s_bsm_pending &&
+	    i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_CFG_LAST, s_bsm_saved) == 0) {
+		s_bsm_pending = false;
+	}
+	if (s_eerd_pending &&
+	    i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_CONTROL1,
+				RV3028_CONTROL1_EERD, 0) == 0) {
+		s_eerd_pending = false;
+	}
+	return !s_bsm_pending && !s_eerd_pending;
+}
+
 /* Apply the descriptor's rv3028-eeprom-config to the adopted chip. The
  * EEPROM is only touched with automatic refresh held off (4.6.7) and backup
  * switchover disabled in RAM (3.15.6: BSM 00 for any EEPROM read or write).
@@ -238,6 +256,7 @@ static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
 	if (d->cfg == NULL) {
 		return;
 	}
+	s_eerd_pending = true;
 	ok = i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_CONTROL1,
 				 RV3028_CONTROL1_EERD, RV3028_CONTROL1_EERD) == 0 &&
 	     rv3028_eeprom_idle(d) &&
@@ -278,10 +297,11 @@ static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
 	/* The Refresh did not run or did not finish: put the switchover mode
 	 * back as it was rather than leave it disabled. */
 	if (held && !refreshed) {
-		(void)i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_CFG_LAST, backup);
+		s_bsm_saved = backup;
+		s_bsm_pending = true;
 	}
-	if (i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_CONTROL1,
-				RV3028_CONTROL1_EERD, 0) != 0) {
+	if (!rv3028_release(d)) {
+		LOG_ERR("%s: switchover or auto refresh left off, retried on save", d->name);
 		ok = false;
 	}
 	if (!ok) {
@@ -407,6 +427,10 @@ void zephcore_rtc_save(uint32_t epoch)
 	}
 
 	const struct rtc_desc *d = s_active;
+
+	if ((s_bsm_pending || s_eerd_pending) && rv3028_release(d)) {
+		LOG_INF("%s: switchover and auto refresh restored", d->name);
+	}
 	int y;
 	unsigned m, day;
 	civil_from_days((int64_t)epoch / 86400, &y, &m, &day);

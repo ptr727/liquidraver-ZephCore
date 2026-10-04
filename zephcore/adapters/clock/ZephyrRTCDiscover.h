@@ -27,10 +27,12 @@ extern "C" {
  * Probe all declared RTC chips. If one is present and holds a sane time
  * (year >= 2025 and its power-loss flag is clear), store the Unix epoch in
  * *epoch_out and return true. The first chip that reads as an RTC (valid BCD
- * time, or its power-loss flag set; never all 0xFF) is remembered as the
- * write-back target, valid time or not. If its descriptor carries
- * rv3028-eeprom-config, adopting it reads the chip's EEPROM (a few ms) and
- * writes each byte that differs (about 16 ms each).
+ * time, or its power-loss flag set; never all 0xFF, nor, at a descriptor with
+ * rv3028-eeprom-config, with an RV3028 always-zero bit set) is remembered as
+ * the write-back target, valid time or not. Adopting one with
+ * rv3028-eeprom-config turns its backup switchover off while it reads the
+ * EEPROM and refreshes RAM from it (a few ms, up to ~66 ms more during the
+ * chip's power-on refresh) and writes each byte that differs (~16 ms each).
  * Returns false if none present or no trustworthy time is held.
  */
 bool zephcore_rtc_restore(uint32_t *epoch_out);
