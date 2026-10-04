@@ -151,7 +151,8 @@ static bool rtc_ruled_out(const struct rtc_desc *d, const uint8_t blk[7])
 enum rtc_verdict { RTC_ABSENT, RTC_ERASED, RTC_NOT_THIS, RTC_FOUND, RTC_FOUND_GARBLED };
 
 /* Decide whether the device at d is the RTC it declares. A device is ruled
- * out only when two reads each rule it out; a failed read never does. An
+ * out only when two reads each rule it out; a failed time-block read never
+ * does, though an unreadable power-loss flag cannot vouch for fields. An
  * all-0xFF block is an erased EEPROM, though a real RTC can power up that
  * way, so it is skipped for now. RTC_FOUND leaves the block to decode in blk;
  * RTC_FOUND_GARBLED is this RTC with no clean read to take a time from. */
