@@ -353,9 +353,9 @@ static bool rtc_probe(uint32_t *epoch_out)
 			    hour * 3600 + min * 60 + sec;
 		if (epoch_out) {
 			*epoch_out = (uint32_t)e;
+			LOG_INF("RTC %s: restored %04u-%02u-%02u %02u:%02u:%02u UTC",
+				d->name, year, month, day, hour, min, sec);
 		}
-		LOG_INF("RTC %s: restored %04u-%02u-%02u %02u:%02u:%02u UTC",
-			d->name, year, month, day, hour, min, sec);
 		return true;
 	}
 	return false;
