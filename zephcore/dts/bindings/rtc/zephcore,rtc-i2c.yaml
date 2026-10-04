@@ -49,10 +49,12 @@ properties:
       EEPROM-backed configuration registers 0x35 (CLKOUT) to 0x37 (backup
       switchover and trickle charger), one triplet per register, masking
       implemented bits only (35h bits 5:4 are not); any other triplet is
-      ignored. A chip
-      at the address whose always-zero time bits read 1 is not adopted.
-      When the chip is adopted, any
-      register whose masked bits differ is updated and committed to the
-      chip's EEPROM, so the chip's own refresh from EEPROM keeps it. Set it
+      ignored. A chip at the address whose always-zero time bits read 1 on
+      two reads is not adopted. When the chip is adopted, any register whose
+      masked bits differ is written to the chip's EEPROM, one byte at a time
+      with backup switchover held off, so the chip's own refresh from EEPROM
+      keeps it. If that fails, the config is set in the RAM mirror, which
+      lasts until the chip's next daily refresh, and the store is retried up
+      to 3 times, 10 minutes apart. Set it
       only on a board whose backup supply is known: trickle charging suits
       a supercapacitor or rechargeable cell, never a primary cell.

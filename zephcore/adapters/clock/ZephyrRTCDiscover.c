@@ -76,11 +76,6 @@ static bool s_probed;
  * runs the whole probe once more, once per boot. */
 static bool s_skipped_ff;
 static bool s_reprobed;
-/* The RV3028 config step did not complete: a save runs it again, up to
- * RTC_CFG_RERUNS times per boot. */
-#define RTC_CFG_RERUNS 3
-static bool s_cfg_pending;
-static uint8_t s_cfg_reruns;
 
 #define BCD2BIN(x) ((((x) >> 4) & 0x0F) * 10 + ((x) & 0x0F))
 
@@ -151,14 +146,18 @@ static bool rtc_time_unreliable(const struct rtc_desc *d, const uint8_t blk[7])
 	return (st & d->status_mask) != 0;
 }
 
-/* Wait for EEbusy to clear: ~66 ms after power-on, ~16 ms for a byte write. */
+/* Wait for EEbusy to clear: ~66 ms after power-on, ~16 ms for a byte write.
+ * A failed read ends the wait, rather than polling a dead bus through each
+ * transfer's timeout. */
 static bool rv3028_eeprom_idle(const struct rtc_desc *d)
 {
 	for (int ms = 0; ms <= 100; ms++) {
 		uint8_t st;
 
-		if (i2c_reg_read_byte(d->bus, d->addr, RV3028_REG_STATUS, &st) == 0 &&
-		    !(st & RV3028_STATUS_EEBUSY)) {
+		if (i2c_reg_read_byte(d->bus, d->addr, RV3028_REG_STATUS, &st) != 0) {
+			return false;
+		}
+		if (!(st & RV3028_STATUS_EEBUSY)) {
 			return true;
 		}
 		k_msleep(1);
@@ -238,22 +237,20 @@ static uint8_t rv3028_cfg_backup_ram(const struct rtc_desc *d, uint8_t ram)
 	return ram;
 }
 
-/* Apply the descriptor's rv3028-eeprom-config to the adopted chip. The
+/* Store the descriptor's rv3028-eeprom-config in the chip's EEPROM. The
  * EEPROM is only touched with automatic refresh held off (4.6.7) and backup
  * switchover disabled in RAM (3.15.6: BSM 00 for any EEPROM read or write).
  * Each byte is compared against the EEPROM itself (4.6.6) and written only if
  * it differs (4.6.5). A closing Refresh (4.6.4) reloads RAM from the EEPROM,
- * switching back to the stored BSM, and what was written is read back. A
- * triplet outside 35h-37h, masking an unimplemented bit, or repeating a
- * register is ignored, so a devicetree mistake cannot write on every boot. */
-static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
+ * switching back to the stored BSM, and the config is read back on every run.
+ * A triplet outside 35h-37h, masking an unimplemented bit, or repeating a
+ * register is ignored, so a devicetree mistake cannot write on every boot.
+ * Returns false if the config was not confirmed, or EERD was not cleared. */
+static bool rv3028_store_config(const struct rtc_desc *d)
 {
 	bool changed = false, held = false, refreshed = false, ok;
 	uint8_t backup = 0;
 
-	if (d->cfg == NULL) {
-		return;
-	}
 	ok = i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_CONTROL1,
 				 RV3028_CONTROL1_EERD, RV3028_CONTROL1_EERD) == 0 &&
 	     rv3028_eeprom_idle(d) &&
@@ -266,34 +263,33 @@ static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
 
 	for (size_t i = 0; ok && i + 2 < d->cfg_len; i += 3) {
 		uint8_t old, reg = d->cfg[i], mask = d->cfg[i + 1];
-		uint8_t val = d->cfg[i + 2];
+		uint8_t val = d->cfg[i + 2] & mask;
 
 		if (!rv3028_cfg_triplet_ok(d, i)) {
 			LOG_WRN("%s: config triplet for 0x%02x ignored", d->name, reg);
 			continue;
 		}
 		ok = rv3028_eeprom_read(d, reg, &old);
-		if (ok && ((old ^ val) & mask) != 0) {
-			ok = rv3028_eeprom_write(d, reg, (old & ~mask) | (val & mask));
+		if (ok && (old & mask) != val) {
+			ok = rv3028_eeprom_write(d, reg, (old & ~mask) | val);
 			changed = true;
 		}
 	}
-	if (ok) {
-		ok = refreshed = rv3028_eeprom_cmd(d, RV3028_EE_CMD_REFRESH, 1);
-	}
-	for (size_t i = 0; ok && changed && i + 2 < d->cfg_len; i += 3) {
+	ok = refreshed = ok && rv3028_eeprom_cmd(d, RV3028_EE_CMD_REFRESH, 1);
+	for (size_t i = 0; ok && i + 2 < d->cfg_len; i += 3) {
 		uint8_t now;
 
-		if (!rv3028_cfg_triplet_ok(d, i)) {
-			continue;
+		if (rv3028_cfg_triplet_ok(d, i)) {
+			ok = i2c_reg_read_byte(d->bus, d->addr, d->cfg[i], &now) == 0 &&
+			     ((now ^ d->cfg[i + 2]) & d->cfg[i + 1]) == 0;
 		}
-		ok = i2c_reg_read_byte(d->bus, d->addr, d->cfg[i], &now) == 0 &&
-		     ((now ^ d->cfg[i + 2]) & d->cfg[i + 1]) == 0;
 	}
 
 	/* The Refresh did not run or did not finish, so RAM may still hold BSM
-	 * 00. Write 37h as configured: RAM only, and never an older value. */
+	 * 00. Once an EEPROM operation still running has had the chance to
+	 * finish, write 37h as configured: RAM only, never an older value. */
 	if (held && !refreshed) {
+		(void)rv3028_eeprom_idle(d);
 		(void)i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_CFG_LAST,
 					 rv3028_cfg_backup_ram(d, backup));
 	}
@@ -301,12 +297,66 @@ static void rv3028_apply_eeprom_config(const struct rtc_desc *d)
 				RV3028_CONTROL1_EERD, 0) != 0) {
 		ok = false;
 	}
-	s_cfg_pending = !ok;
-	if (!ok) {
-		LOG_WRN("%s: config not applied", d->name);
-	} else if (changed) {
+	if (ok && changed) {
 		LOG_INF("%s: config committed to EEPROM", d->name);
 	}
+	return ok;
+}
+
+/* Set the config in the RAM mirror only, which lasts until the next refresh. */
+static bool rv3028_set_ram(const struct rtc_desc *d)
+{
+	bool ok = true;
+
+	for (size_t i = 0; i + 2 < d->cfg_len; i += 3) {
+		uint8_t old, reg = d->cfg[i], mask = d->cfg[i + 1];
+
+		if (rv3028_cfg_triplet_ok(d, i)) {
+			ok = i2c_reg_read_byte(d->bus, d->addr, reg, &old) == 0 &&
+			     i2c_reg_write_byte(d->bus, d->addr, reg,
+						(old & ~mask) | (d->cfg[i + 2] & mask)) == 0 &&
+			     ok;
+		}
+	}
+	return ok;
+}
+
+/* A failed store is retried on the system work queue, a few times per boot
+ * only: a password-locked chip, or a part at the address that is not an
+ * RV3028, never succeeds, and every attempt writes to it again. */
+#define RTC_CFG_RETRY K_MINUTES(10)
+#define RTC_CFG_RETRIES 3
+
+static uint8_t s_cfg_tries;
+static void rv3028_cfg_retry_fn(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(s_cfg_retry, rv3028_cfg_retry_fn);
+
+/* Store the config, falling back to the RAM mirror if that fails: without
+ * the EEPROM store the RAM config lasts only until the next refresh, which on
+ * a chip still holding its delivery EEPROM turns switchover back off. */
+static void rv3028_configure(const struct rtc_desc *d)
+{
+	if (d->cfg == NULL) {
+		return;
+	}
+	s_cfg_tries++;
+	if (rv3028_store_config(d)) {
+		return;
+	}
+	(void)rv3028_eeprom_idle(d);
+	bool ram = rv3028_set_ram(d);
+
+	LOG_WRN("%s: config not stored in EEPROM, %s in RAM (attempt %u)", d->name,
+		ram ? "set" : "NOT set", s_cfg_tries);
+	if (s_cfg_tries <= RTC_CFG_RETRIES) {
+		k_work_schedule(&s_cfg_retry, RTC_CFG_RETRY);
+	}
+}
+
+static void rv3028_cfg_retry_fn(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	rv3028_configure(s_active);
 }
 
 /* Probe all chips once; cache the first present one in s_active. If a present
@@ -340,6 +390,18 @@ static bool rtc_probe(uint32_t *epoch_out)
 			continue;
 		}
 
+		/* At an RV3028 descriptor, a bit an RV3028 always reads as 0 marks
+		 * some other part. Only two reads that agree rule out an RV3028. */
+		if (d->cfg != NULL && !rv3028_time_bits_ok(blk)) {
+			if (i2c_burst_read(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) != 0) {
+				continue;
+			}
+			if (!rv3028_time_bits_ok(blk)) {
+				LOG_WRN("%s: not an RV3028, skipped", d->name);
+				continue;
+			}
+		}
+
 		/* Mask off flag/century bits. We trust this is a real RTC (vs. an
 		 * unrelated chip sharing the address) if EITHER the block is valid
 		 * BCD, OR the chip's power-loss flag is set — the latter is itself
@@ -361,14 +423,9 @@ static bool rtc_probe(uint32_t *epoch_out)
 			continue;  /* neither valid time nor a lost-power RTC => skip */
 		}
 
-		if (d->cfg != NULL && !rv3028_time_bits_ok(blk)) {
-			LOG_WRN("%s: not an RV3028, skipped", d->name);
-			continue;
-		}
-
 		if (s_active == NULL) {
 			s_active = d;  /* RTC => our write-back target */
-			rv3028_apply_eeprom_config(d);
+			rv3028_configure(d);
 		}
 
 		if (unreliable) {
@@ -410,10 +467,6 @@ bool zephcore_rtc_restore(uint32_t *epoch_out)
 
 void zephcore_rtc_save(uint32_t epoch)
 {
-	if (s_active != NULL && s_cfg_pending && s_cfg_reruns < RTC_CFG_RERUNS) {
-		s_cfg_reruns++;
-		rv3028_apply_eeprom_config(s_active);
-	}
 	if (!s_probed) {
 		/* Restore wasn't run (unexpected) — discover now. */
 		(void)rtc_probe(NULL);

@@ -28,11 +28,14 @@ extern "C" {
  * (year >= 2025 and its power-loss flag is clear), store the Unix epoch in
  * *epoch_out and return true. The first chip that reads as an RTC (valid BCD
  * time, or its power-loss flag set; never all 0xFF, nor, at a descriptor with
- * rv3028-eeprom-config, with an RV3028 always-zero bit set) is remembered as
- * the write-back target, valid time or not. Adopting one with
- * rv3028-eeprom-config turns its backup switchover off while it reads the
- * EEPROM and refreshes RAM from it (a few ms, up to ~66 ms more during the
- * chip's power-on refresh) and writes each byte that differs (~16 ms each).
+ * rv3028-eeprom-config, with an RV3028 always-zero bit set on two reads) is
+ * remembered as the write-back target, valid time or not. Adopting one with
+ * rv3028-eeprom-config first waits out the chip's power-on refresh (up to
+ * ~66 ms), then turns its backup switchover off while it reads the EEPROM
+ * and refreshes RAM from it (a few ms) and writes each byte that differs
+ * (~16 ms each). If that store fails, the config is set in RAM, which lasts
+ * until the chip's next daily refresh, and the store is retried on the
+ * system work queue every 10 minutes, at most 3 times.
  * Returns false if none present or no trustworthy time is held.
  */
 bool zephcore_rtc_restore(uint32_t *epoch_out);
@@ -42,8 +45,7 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
  * power-loss flag. No-op if no RTC was discovered. Safe to call often, but
  * intended only for real syncs (GPS/app/CLI), not per-packet clock nudges.
  * If restore adopted nothing but skipped an all-0xFF candidate, the first
- * save probes again, once per boot, in the caller's context. If an RV3028's
- * config step did not complete, a save runs it again, at most 3 per boot.
+ * save probes again, once per boot, in the caller's context.
  */
 void zephcore_rtc_save(uint32_t epoch);
 
