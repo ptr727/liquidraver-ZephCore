@@ -28,6 +28,9 @@ LOG_MODULE_REGISTER(zephcore_rtc, CONFIG_ZEPHCORE_DATASTORE_LOG_LEVEL);
 /* Validity flag lives in the seconds byte itself (PCF8563 VL bit). */
 #define RTC_STATUS_IN_SECONDS 0xFF
 
+/* Only a board with an rv3028-eeprom-config node carries the RV3028 code. */
+#define RTC_RV3028_CFG DT_ANY_COMPAT_HAS_PROP_STATUS_OKAY(RTC_COMPAT, rv3028_eeprom_config)
+
 struct rtc_desc {
 	const struct device *bus;
 	uint16_t addr;
@@ -35,11 +38,26 @@ struct rtc_desc {
 	uint8_t  date_index;   /* day-of-month offset in the 7-byte block */
 	uint8_t  status_reg;   /* power-loss flag register, or RTC_STATUS_IN_SECONDS */
 	uint8_t  status_mask;  /* "time unreliable" bit within status_reg */
+	const uint8_t *zero;   /* 7 bytes of bits the data sheet shows as 0, or NULL */
+#if RTC_RV3028_CFG
 	const uint8_t *cfg;    /* rv3028-eeprom-config triplets, or NULL */
 	uint8_t  cfg_len;
+#endif
 	const char *name;
 };
 
+#define RTC_ZERO_NAME(node) _CONCAT(rtc_zero_, DT_DEP_ORD(node))
+
+#define RTC_ZERO_ARRAY(node)                                          \
+	IF_ENABLED(DT_NODE_HAS_PROP(node, zero_mask),                 \
+		   (static const uint8_t RTC_ZERO_NAME(node)[] =      \
+			    DT_PROP(node, zero_mask);                 \
+		    BUILD_ASSERT(sizeof(RTC_ZERO_NAME(node)) == 7,     \
+				 "zero-mask is one byte per time register");))
+
+DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_ZERO_ARRAY)
+
+#if RTC_RV3028_CFG
 #define RTC_CFG_NAME(node) _CONCAT(rtc_cfg_, DT_DEP_ORD(node))
 
 #define RTC_CFG_ARRAY(node)                                           \
@@ -52,6 +70,14 @@ struct rtc_desc {
 
 DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_CFG_ARRAY)
 
+#define RTC_CFG_FIELDS(node)                                          \
+	.cfg     = COND_CODE_1(DT_NODE_HAS_PROP(node, rv3028_eeprom_config), \
+			       (RTC_CFG_NAME(node)), (NULL)),         \
+	.cfg_len = DT_PROP_LEN_OR(node, rv3028_eeprom_config, 0),
+#else
+#define RTC_CFG_FIELDS(node)
+#endif
+
 #define RTC_DESC_ENTRY(node)                                          \
 	{                                                             \
 		.bus         = DEVICE_DT_GET(DT_BUS(node)),           \
@@ -60,10 +86,10 @@ DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_CFG_ARRAY)
 		.date_index  = (uint8_t)DT_PROP(node, date_index),    \
 		.status_reg  = (uint8_t)DT_PROP(node, status_reg),    \
 		.status_mask = (uint8_t)DT_PROP(node, status_mask),   \
-		.cfg         = COND_CODE_1(                           \
-			DT_NODE_HAS_PROP(node, rv3028_eeprom_config),  \
-			(RTC_CFG_NAME(node)), (NULL)),                 \
-		.cfg_len     = DT_PROP_LEN_OR(node, rv3028_eeprom_config, 0), \
+		.zero        = COND_CODE_1(                           \
+			DT_NODE_HAS_PROP(node, zero_mask),             \
+			(RTC_ZERO_NAME(node)), (NULL)),                \
+		RTC_CFG_FIELDS(node)                                  \
 		.name        = DT_NODE_FULL_NAME(node),               \
 	},
 
@@ -74,33 +100,16 @@ static const struct rtc_desc rtc_descs[] = {
 /* Chip we'll read/write going forward (first one found present). */
 static const struct rtc_desc *s_active;
 static bool s_probed;
-/* A candidate read all 0xFF and was skipped: a later zephcore_rtc_save()
- * runs the whole probe once more, once per boot. */
+/* A candidate's first read was all 0xFF and it was skipped: if nothing was
+ * adopted, the first save probes again. */
 static bool s_skipped_ff;
 static bool s_reprobed;
 
 #define BCD2BIN(x) ((((x) >> 4) & 0x0F) * 10 + ((x) & 0x0F))
-
-/* RV3028 registers for reading and writing its configuration EEPROM. */
-#define RV3028_REG_STATUS     0x0E
-#define RV3028_STATUS_EEBUSY  BIT(7)
-#define RV3028_REG_CONTROL1   0x0F
-#define RV3028_CONTROL1_EERD  BIT(3)
-#define RV3028_REG_EE_ADDR    0x25
-#define RV3028_REG_EE_DATA    0x26
-#define RV3028_REG_EE_COMMAND 0x27
-#define RV3028_EE_CMD_REFRESH 0x12  /* all configuration EEPROM -> RAM */
-#define RV3028_EE_CMD_WRITE   0x21  /* EEDATA -> one EEPROM byte */
-#define RV3028_EE_CMD_READ    0x22  /* one EEPROM byte -> EEDATA */
-#define RV3028_REG_CFG_FIRST  0x35  /* EEPROM Clkout */
-#define RV3028_REG_CFG_LAST   0x37  /* EEPROM Backup */
-#define RV3028_BACKUP_BSM     0x0C  /* 37h switchover mode; 00 = disabled */
 #define BIN2BCD(x) ((((x) / 10) << 4) | ((x) % 10))
 
 /* A byte is valid BCD if both nibbles are 0-9, and its decoded value fits the
- * field. Used to tell a real RTC apart from an unrelated I2C chip that happens
- * to share an address (e.g. an MPU-class IMU at 0x68, same as DS3231) — we must
- * never adopt and write time into such a device. */
+ * field. */
 static bool bcd_field_ok(uint8_t v, unsigned max)
 {
 	if ((v & 0x0F) > 9 || (v >> 4) > 9) {
@@ -134,8 +143,8 @@ static void civil_from_days(int64_t z, int *y, unsigned *m, unsigned *d)
 	*y = yy + (*m <= 2);
 }
 
-/* Read the chip's power-loss flag. true => held time is unreliable. */
-static bool rtc_time_unreliable(const struct rtc_desc *d, const uint8_t blk[7])
+/* The chip's power-loss flag: 1 set, 0 clear, -1 the status read failed. */
+static int rtc_power_flag(const struct rtc_desc *d, const uint8_t blk[7])
 {
 	if (d->status_reg == RTC_STATUS_IN_SECONDS) {
 		return (blk[0] & d->status_mask) != 0;
@@ -143,9 +152,112 @@ static bool rtc_time_unreliable(const struct rtc_desc *d, const uint8_t blk[7])
 
 	uint8_t st;
 	if (i2c_reg_read_byte(d->bus, d->addr, d->status_reg, &st) != 0) {
-		return true;  /* can't confirm => don't trust it */
+		return -1;
 	}
 	return (st & d->status_mask) != 0;
+}
+
+/* Seconds, minutes, date and month in range: the fields that read the same in
+ * 12- and 24-hour mode. */
+static bool rtc_fields_ok(const struct rtc_desc *d, const uint8_t blk[7])
+{
+	uint8_t db = blk[d->date_index] & 0x3F, ob = blk[5] & 0x1F;
+
+	return bcd_field_ok(blk[0] & 0x7F, 59) && bcd_field_ok(blk[1] & 0x7F, 59) &&
+	       bcd_field_ok(db, 31) && BCD2BIN(db) >= 1 &&
+	       bcd_field_ok(ob, 12) && BCD2BIN(ob) >= 1;
+}
+
+/* True if one read shows the device is not this RTC: a bit the data sheet
+ * shows as 0 is set, or rtc_fields_ok() fails while the power-loss flag does
+ * not read as set. The year and hours are not checked: other firmware can
+ * leave a year byte past 99 or the chip in 12-hour mode, and the chip is
+ * still this RTC. */
+static bool rtc_ruled_out(const struct rtc_desc *d, const uint8_t blk[7])
+{
+	for (size_t k = 0; d->zero != NULL && k < 7; k++) {
+		if (blk[k] & d->zero[k]) {
+			return true;
+		}
+	}
+	return !rtc_fields_ok(d, blk) && rtc_power_flag(d, blk) != 1;
+}
+
+enum rtc_verdict { RTC_ABSENT, RTC_ERASED, RTC_NOT_THIS, RTC_FOUND, RTC_FOUND_GARBLED };
+
+static bool rtc_all_ff(const uint8_t blk[7])
+{
+	for (size_t k = 0; k < 7; k++) {
+		if (blk[k] != 0xFF) {
+			return false;
+		}
+	}
+	return true;
+}
+
+/* Decide whether the device at d is the RTC it declares. A first read that
+ * fails means nothing is there, and one that is all 0xFF is an erased EEPROM,
+ * though a real RTC can power up that way, so it is skipped for now.
+ * Otherwise the device is ruled out only when two reads each rule it out: a
+ * failed second read does not, an all-0xFF second read does, and an
+ * unreadable power-loss flag cannot vouch for the fields. RTC_FOUND leaves
+ * the block to decode in blk; RTC_FOUND_GARBLED is this RTC with no clean
+ * read to take a time from. */
+static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
+{
+	uint8_t again[7];
+
+	if (!device_is_ready(d->bus) ||
+	    i2c_burst_read(d->bus, d->addr, d->time_reg, blk, 7) != 0) {
+		return RTC_ABSENT;
+	}
+	if (rtc_all_ff(blk)) {
+		return RTC_ERASED;
+	}
+	if (!rtc_ruled_out(d, blk)) {
+		return RTC_FOUND;
+	}
+	if (i2c_burst_read(d->bus, d->addr, d->time_reg, again, sizeof(again)) != 0) {
+		return RTC_FOUND_GARBLED;
+	}
+	if (rtc_all_ff(again) || rtc_ruled_out(d, again)) {
+		return RTC_NOT_THIS;
+	}
+	memcpy(blk, again, sizeof(again));
+	return RTC_FOUND;
+}
+
+#if RTC_RV3028_CFG
+
+/* RV3028 registers for reading and writing its configuration EEPROM. */
+#define RV3028_REG_STATUS     0x0E
+#define RV3028_STATUS_EEBUSY  BIT(7)
+#define RV3028_STATUS_BSF     BIT(5)
+#define RV3028_REG_CONTROL1   0x0F
+#define RV3028_CONTROL1_EERD  BIT(3)
+#define RV3028_REG_EE_ADDR    0x25
+#define RV3028_REG_EE_DATA    0x26
+#define RV3028_REG_EE_COMMAND 0x27
+#define RV3028_EE_CMD_REFRESH 0x12  /* all configuration EEPROM -> RAM */
+#define RV3028_EE_CMD_WRITE   0x21  /* EEDATA -> one EEPROM byte */
+#define RV3028_EE_CMD_READ    0x22  /* one EEPROM byte -> EEDATA */
+#define RV3028_REG_CFG_FIRST  0x35  /* EEPROM Clkout */
+#define RV3028_REG_CFG_LAST   0x37  /* EEPROM Backup */
+#define RV3028_BACKUP_BSM     0x0C  /* 37h switchover mode; 00 = disabled */
+
+/* Read the time block again, with BSF cleared before and checked after. A
+ * switchover to backup disables the chip's I2C (4.2), so the rest of a read
+ * comes back 0xFF; a tail starting inside the year byte can still be valid
+ * BCD, a year too high. False if the read is not known to be whole. */
+static bool rv3028_read_steady(const struct rtc_desc *d, uint8_t blk[7])
+{
+	uint8_t st;
+
+	return i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_STATUS,
+				   RV3028_STATUS_BSF, 0) == 0 &&
+	       i2c_burst_read(d->bus, d->addr, d->time_reg, blk, 7) == 0 &&
+	       i2c_reg_read_byte(d->bus, d->addr, RV3028_REG_STATUS, &st) == 0 &&
+	       !(st & RV3028_STATUS_BSF);
 }
 
 /* Wait for EEbusy to clear: ~66 ms after power-on, ~16 ms for a byte write.
@@ -208,20 +320,6 @@ static bool rv3028_cfg_triplet_ok(const struct rtc_desc *d, size_t i)
 	}
 	for (size_t k = 0; k < i; k += 3) {
 		if (d->cfg[k] == reg) {
-			return false;
-		}
-	}
-	return true;
-}
-
-/* Bits the RV3028 always reads as 0 in its time block (manual 3.2). False if
- * one is set in the same register of both reads a and b: not an RV3028. */
-static bool rv3028_time_bits_ok(const uint8_t a[7], const uint8_t b[7])
-{
-	static const uint8_t zero[7] = { 0x80, 0x80, 0xC0, 0xF8, 0xC0, 0xE0, 0x00 };
-
-	for (size_t k = 0; k < 7; k++) {
-		if ((a[k] & zero[k]) && (b[k] & zero[k])) {
 			return false;
 		}
 	}
@@ -369,8 +467,10 @@ static void rv3028_cfg_retry_fn(struct k_work *work)
 	rv3028_configure(s_active);
 }
 
-/* Probe all chips once; cache the first present one in s_active. If a present
- * chip holds a sane time, return it via epoch_out. */
+#endif /* RTC_RV3028_CFG */
+
+/* Probe the chips in order; cache the first one found in s_active. Stop at
+ * the first that holds a sane time, returned via epoch_out. */
 static bool rtc_probe(uint32_t *epoch_out)
 {
 	s_skipped_ff = false;
@@ -378,81 +478,60 @@ static bool rtc_probe(uint32_t *epoch_out)
 	for (size_t i = 0; i < ARRAY_SIZE(rtc_descs); i++) {
 		const struct rtc_desc *d = &rtc_descs[i];
 		uint8_t blk[7];
+		enum rtc_verdict v = rtc_identify(d, blk);
 
-		if (!device_is_ready(d->bus)) {
-			continue;
-		}
-		if (i2c_burst_read(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) != 0) {
-			continue;  /* no ACK => chip absent */
-		}
-
-		/* An erased EEPROM sharing the address reads 0xFF everywhere, its
-		 * "status" too, which would otherwise pass as a set power-loss flag.
-		 * A real RTC can read all 0xFF too (some leave their time undefined
-		 * at power-on), so a later save probes again. */
-		bool all_ff = true;
-
-		for (size_t k = 0; k < sizeof(blk); k++) {
-			all_ff = all_ff && (blk[k] == 0xFF);
-		}
-		if (all_ff) {
+		if (v == RTC_ERASED) {
 			s_skipped_ff = true;
 			continue;
 		}
-
-		/* At an RV3028 descriptor, a bit an RV3028 always reads as 0 marks
-		 * some other part. Only the same register showing one on two reads
-		 * rules out an RV3028; a failed second read does not. Without a
-		 * clean read the chip is adopted but no time is taken from it. */
-		bool garbled = false;
-
-		if (d->cfg != NULL && !rv3028_time_bits_ok(blk, blk)) {
-			uint8_t again[sizeof(blk)];
-
-			if (i2c_burst_read(d->bus, d->addr, d->time_reg, again, sizeof(again)) == 0) {
-				if (!rv3028_time_bits_ok(blk, again)) {
-					LOG_WRN("%s: not an RV3028, skipped", d->name);
-					continue;
-				}
-				memcpy(blk, again, sizeof(blk));
-			}
-			garbled = !rv3028_time_bits_ok(blk, blk);
+		if (v == RTC_NOT_THIS) {
+			LOG_INF("%s: device at the address is not this RTC, skipped", d->name);
+			continue;
+		}
+		if (v == RTC_ABSENT) {
+			continue;
 		}
 
-		/* Mask off flag/century bits. We trust this is a real RTC (vs. an
-		 * unrelated chip sharing the address) if EITHER the block is valid
-		 * BCD, OR the chip's power-loss flag is set — the latter is itself
-		 * proof it's an RTC that lost power and whose time registers may be
-		 * garbage. Adopting in the power-loss case is essential: otherwise a
-		 * battery-depleted RTC (garbage registers, VL/OSF/PORF latched) would
-		 * never become the write-back target, so a sync could never
-		 * re-initialise it and the clock would stay blank forever. */
-		uint8_t sb = blk[0] & 0x7F, mb = blk[1] & 0x7F, hb = blk[2] & 0x3F;
-		uint8_t db = blk[d->date_index] & 0x3F, ob = blk[5] & 0x1F, yb = blk[6];
+#if RTC_RV3028_CFG
+		/* Only a clean identification is configured: the store writes to
+		 * the device at once. */
+		bool clean = v == RTC_FOUND;
 
-		bool bcd_ok = bcd_field_ok(sb, 59) && bcd_field_ok(mb, 59) &&
-			      bcd_field_ok(hb, 23) && bcd_field_ok(db, 31) &&
-			      bcd_field_ok(ob, 12) && bcd_field_ok(yb, 99) &&
-			      BCD2BIN(db) >= 1 && BCD2BIN(ob) >= 1;
-		bool unreliable = rtc_time_unreliable(d, blk);
-
-		if (!bcd_ok && !unreliable && !garbled) {
-			continue;  /* neither valid time nor a lost-power RTC => skip */
+		if (clean && d->cfg != NULL && !rv3028_read_steady(d, blk)) {
+			v = RTC_FOUND_GARBLED;
 		}
-
+#endif
 		if (s_active == NULL) {
 			s_active = d;  /* RTC => our write-back target */
-			rv3028_configure(d);
+#if RTC_RV3028_CFG
+			if (clean) {
+				rv3028_configure(d);
+			}
+#endif
 		}
 
-		if (garbled) {
+		if (v == RTC_FOUND_GARBLED) {
 			LOG_WRN("%s present, time unreadable — clock will be set on the "
 				"next GPS/app/CLI sync", d->name);
 			continue;
 		}
-		if (unreliable) {
-			LOG_WRN("%s present, power-loss flag set — clock will be set "
-				"on the next GPS/app/CLI sync", d->name);
+		int flag = rtc_power_flag(d, blk);
+
+		if (flag != 0) {
+			LOG_WRN("%s present, power-loss flag %s — clock will be set "
+				"on the next GPS/app/CLI sync", d->name,
+				flag > 0 ? "set" : "unreadable");
+			continue;
+		}
+
+		uint8_t sb = blk[0] & 0x7F, mb = blk[1] & 0x7F, hb = blk[2] & 0x3F;
+		uint8_t db = blk[d->date_index] & 0x3F, ob = blk[5] & 0x1F, yb = blk[6];
+
+		/* Identity leaves the hours and year unchecked, and may have let the
+		 * other fields pass on a flag read since; a time needs them all. */
+		if (!rtc_fields_ok(d, blk) || !bcd_field_ok(hb, 23) || !bcd_field_ok(yb, 99)) {
+			LOG_WRN("%s present, time unreadable — clock will be set on the "
+				"next GPS/app/CLI sync", d->name);
 			continue;
 		}
 

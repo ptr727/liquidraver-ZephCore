@@ -24,21 +24,30 @@ extern "C" {
 #endif
 
 /*
- * Probe all declared RTC chips. If one is present and holds a sane time
- * (year >= 2025 and its power-loss flag is clear), store the Unix epoch in
- * *epoch_out and return true. The first chip that reads as an RTC (valid BCD
- * time, or its power-loss flag set or unreadable; never all 0xFF, nor, at a
- * descriptor with rv3028-eeprom-config, with an RV3028 always-zero bit set
- * in the same register on two reads) is remembered as the write-back target,
- * valid time or not. Adopting one with rv3028-eeprom-config first waits out
- * the chip's power-on refresh (up to ~66 ms), then turns its backup
- * switchover off while it reads the EEPROM and refreshes RAM from it, and
- * writes each byte that differs. Measured on a RAK4631: about 14 ms when
- * nothing is written, 52 ms for two bytes. Then switchover takes up to 2 ms
- * to react in DSM, 15.6 ms in LSM (4.2.2-3). If that store fails, the config
- * is set in RAM, which lasts until the chip's next daily refresh, and the
- * store is retried on the system work queue every 10 minutes, at most 3
- * times. Returns false if none present or no trustworthy time is held.
+ * Probe the declared RTC chips in order, stopping at the first that holds a
+ * sane time (year >= 2025 and its power-loss flag clear): store its Unix
+ * epoch in *epoch_out and return true. The first chip found (valid time or
+ * not) is remembered as the write-back target. A failed first read means
+ * nothing is there, and a first read of all 0xFF (an erased EEPROM) is
+ * skipped. Otherwise a device is passed over only if two reads each show it
+ * is not that RTC: a bit set that the data sheet shows as 0 (the
+ * descriptor's zero-mask), seconds, minutes, date or month out of range
+ * while the power-loss flag does not read as set (an unreadable flag counts
+ * as not set), or, on the second read, all 0xFF. A failed second read never
+ * rules a device out. A time is taken only from a clean read whose fields,
+ * hours and year are each in range (12-hour mode is not decoded).
+ * At a descriptor with rv3028-eeprom-config, the time is read once more with
+ * the chip's backup switch flag (BSF) cleared before and checked after, and
+ * is not taken if the read failed or BSF was set. A chip adopted on a read
+ * that identified it (not on a failed second read) has that config stored:
+ * after the power-on refresh (up to ~66 ms), backup switchover is turned off
+ * while the EEPROM is read, each byte that differs is written, and a refresh
+ * from EEPROM restores it. Measured on a RAK4631: about 14 ms when nothing is
+ * written, 52 ms for two bytes, then up to 2 ms for DSM to react (4.2.2). If
+ * the store fails, the config is set in RAM, which lasts until the chip's
+ * next daily refresh, and the store is retried on the system work queue
+ * every 10 minutes, at most 3 times. Returns false if none present or no
+ * trustworthy time is held.
  */
 bool zephcore_rtc_restore(uint32_t *epoch_out);
 
@@ -46,8 +55,9 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
  * Persist an authoritative epoch to the discovered RTC chip and clear its
  * power-loss flag. No-op if no RTC was discovered. Safe to call often, but
  * intended only for real syncs (GPS/app/CLI), not per-packet clock nudges.
- * If restore adopted nothing but skipped an all-0xFF candidate, the first
- * save probes again, once per boot, in the caller's context.
+ * If restore adopted nothing but skipped a candidate whose first read was all
+ * 0xFF, the first save probes again, once per boot, in the caller's context.
+ * A device ruled out on its second read is not probed again for that reason.
  */
 void zephcore_rtc_save(uint32_t epoch);
 
