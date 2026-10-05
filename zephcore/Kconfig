@@ -906,12 +906,12 @@ config ZEPHCORE_RTC_AUTODISCOVER
 	  power-off. A node with rv3028-eeprom-config has its time read and
 	  written with the chip's backup switch flag cleared before and
 	  checked after, and, when its chip is the one adopted, a read
-	  identifies it, and the boot time read shows no backup switchover,
-	  has that configuration committed to the chip's EEPROM when it
-	  differs, with backup switchover held off while the EEPROM is
-	  accessed. Compact raw-I2C reader (no Zephyr RTC subsystem). Safe to
-	  leave on: a board that declares no zephcore,rtc-i2c node compiles
-	  to nothing.
+	  identifies it, and a checked time read just before the store shows
+	  no backup switchover, has that configuration committed to the
+	  chip's EEPROM when it differs, with backup switchover held off
+	  while the EEPROM is accessed. Compact raw-I2C reader (no Zephyr RTC
+	  subsystem). Safe to leave on: a board that declares no
+	  zephcore,rtc-i2c node compiles to nothing.
 
 menu "GPS Configuration"
 

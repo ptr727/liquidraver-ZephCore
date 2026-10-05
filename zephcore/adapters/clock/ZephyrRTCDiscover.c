@@ -282,7 +282,7 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
 
 /* Year 00h first and the real year last: a power loss, which no retry can
  * repeat, cutting the write after the first byte and before the last leaves
- * year 2000, read at boot as "time not yet set" rather than as a mixed time. */
+ * year 2000, so the next boot takes no time from it. */
 static bool rv3028_write_time(const struct rtc_desc *d, const uint8_t blk[7])
 {
 	return i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, 0x00) == 0 &&
