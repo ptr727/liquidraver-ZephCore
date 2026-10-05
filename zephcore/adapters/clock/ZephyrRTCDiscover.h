@@ -66,7 +66,7 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
  * so a write cut by a power loss reads at boot as "time not yet set". A
  * write not confirmed is repeated every 5 s on the system work queue, with
  * the time run on, until one is confirmed, a newer save replaces it, or 12
- * attempts have failed. Call only from the system work queue: the repeat
+ * repeats (13 attempts in all) have failed. Call only from the system work queue: the repeat
  * shares state with this call.
  */
 void zephcore_rtc_save(uint32_t epoch);

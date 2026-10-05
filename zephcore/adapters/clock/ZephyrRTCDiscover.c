@@ -282,8 +282,9 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
 
 /* Year 00h first and the real year last: a write cut by a power loss, which
  * no retry can repeat, leaves year 2000, read at boot as "time not yet set"
- * rather than as a mixed time. Writing seconds restarts the prescaler
- * (4.5.1), so no tick lands between the three writes. */
+ * rather than as a mixed time. A tick before the burst is overwritten by
+ * it, and the burst's seconds restart the prescaler (4.5.1), so none lands
+ * before the real year unless the last write is a second late. */
 static bool rv3028_write_time(const struct rtc_desc *d, const uint8_t blk[7])
 {
 	return i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, 0x00) == 0 &&
@@ -500,12 +501,15 @@ static void rv3028_configure(const struct rtc_desc *d)
 		LOG_WRN("%s: config stored, but EERD still set, so no daily refresh "
 			"(attempt %u)", d->name, s_cfg_tries);
 		break;
-	case RV3028_NOT_STORED:
-		/* RAM only once EEbusy reads 0, as above. */
+	case RV3028_NOT_STORED: {
+		/* RAM only once EEbusy reads 0, as above. Not inside LOG_WRN: a
+		 * build without logging does not evaluate its arguments. */
+		bool set = rv3028_eeprom_idle(d) && rv3028_set_ram(d);
+
 		LOG_WRN("%s: config not stored in EEPROM, %s in RAM (attempt %u)", d->name,
-			rv3028_eeprom_idle(d) && rv3028_set_ram(d) ? "set" : "NOT set",
-			s_cfg_tries);
+			set ? "set" : "NOT set", s_cfg_tries);
 		break;
+	}
 	}
 	if (s_cfg_tries <= RTC_CFG_RETRIES) {
 		k_work_schedule(&s_cfg_retry, RTC_CFG_RETRY);
