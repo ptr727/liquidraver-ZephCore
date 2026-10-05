@@ -282,9 +282,9 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
 
 /* Year 00h first and the real year last: a write cut by a power loss, which
  * no retry can repeat, leaves year 2000, read at boot as "time not yet set"
- * rather than as a mixed time. A tick before the burst is overwritten by
- * it, and the burst's seconds restart the prescaler (4.5.1), so none lands
- * before the real year unless the last write is a second late. */
+ * rather than as a mixed time. The final year write overwrites whatever a
+ * tick before it changed, and the burst's seconds restart the prescaler
+ * (4.5.1), so no tick lands after it unless the last write is a second late. */
 static bool rv3028_write_time(const struct rtc_desc *d, const uint8_t blk[7])
 {
 	return i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, 0x00) == 0 &&
@@ -534,9 +534,11 @@ static void rv3028_cfg_retry_fn(struct k_work *work)
 }
 
 /* A time write that a switchover may have cut is repeated, with the time run
- * on, until one is confirmed, for about a minute: a password-locked chip or
- * one that stopped answering never confirms. A power loss that takes the MCU
- * down too is covered by rv3028_write_time()'s order instead. */
+ * on, until one is confirmed, for about a minute: a chip that stopped
+ * answering never confirms. Confirmed means acknowledged with BSF clear, not
+ * read back, so a password-locked chip that ignores the writes passes. A
+ * power loss that takes the MCU down too is covered by rv3028_write_time()'s
+ * order instead. */
 #define RTC_SAVE_RETRY K_SECONDS(5)
 #define RTC_SAVE_RETRIES 12
 
