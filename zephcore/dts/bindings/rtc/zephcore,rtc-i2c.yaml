@@ -51,3 +51,10 @@ properties:
       while the power-loss flag does not read as set, on two reads, is not
       this RTC and is never adopted. Leave it out for a chip whose unused
       bits are not documented as reading 0.
+
+  weekday-one-hot:
+    type: boolean
+    description: >
+      The weekday register holds one bit per day (Sunday bit 0 to Saturday
+      bit 6) rather than a number 0-6. Set it for a chip whose data sheet
+      says so, such as the RX8130CE.

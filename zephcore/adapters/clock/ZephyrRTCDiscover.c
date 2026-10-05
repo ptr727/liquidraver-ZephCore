@@ -36,6 +36,7 @@ struct rtc_desc {
 	uint8_t  status_reg;   /* power-loss flag register, or RTC_STATUS_IN_SECONDS */
 	uint8_t  status_mask;  /* "time unreliable" bit within status_reg */
 	const uint8_t *zero;   /* 7 bytes of bits the data sheet shows as 0, or NULL */
+	bool     week_one_hot; /* weekday as one bit per day, not 0-6 */
 	const char *name;
 };
 
@@ -61,6 +62,7 @@ DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_ZERO_ARRAY)
 		.zero        = COND_CODE_1(                           \
 			DT_NODE_HAS_PROP(node, zero_mask),             \
 			(RTC_ZERO_NAME(node)), (NULL)),                \
+		.week_one_hot = DT_PROP(node, weekday_one_hot),       \
 		.name        = DT_NODE_FULL_NAME(node),               \
 	},
 
@@ -313,7 +315,7 @@ void zephcore_rtc_save(uint32_t epoch)
 	blk[2] = BIN2BCD(hour);
 	/* weekday occupies whichever of index 3/4 the date doesn't. */
 	blk[d->date_index] = BIN2BCD(day);
-	blk[d->date_index == 4 ? 3 : 4] = (uint8_t)dow;
+	blk[d->date_index == 4 ? 3 : 4] = d->week_one_hot ? (uint8_t)BIT(dow) : (uint8_t)dow;
 	blk[5] = BIN2BCD(m);
 	blk[6] = BIN2BCD((unsigned)(y % 100));
 
