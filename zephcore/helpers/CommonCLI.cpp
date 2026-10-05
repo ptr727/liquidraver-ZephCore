@@ -601,10 +601,14 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 			strcpy(reply, "can't find custom var");
 		}
 	} else if (memcmp(command, "sensor list", 11) == 0) {
-		/* A page with rows after it keeps room for "... next:N" (9 + 10
-		 * digits + terminator), or it could not be resumed. */
+		/* No page is longer than a remote one less a 3-byte "xx|" prefix,
+		 * which also fits a companion frame and a local buffer the prefix
+		 * took 3 bytes from. A page with rows after it keeps room for
+		 * "... next:N" (9 + 10 digits + terminator), or it could not be
+		 * resumed. */
 		const size_t marker = 20;
-		char* lim = reply + replyCap(sender_timestamp);
+		char* lim = reply + MIN(replyCap(sender_timestamp),
+					(size_t)CLI_REMOTE_REPLY_SIZE - 3);
 		char* dp = reply;
 		int start = 0;
 		int end = _sensors->getNumSettings();
