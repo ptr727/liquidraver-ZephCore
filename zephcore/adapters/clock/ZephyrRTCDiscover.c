@@ -245,17 +245,19 @@ static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 #define RV3028_REG_CFG_LAST   0x37  /* EEPROM Backup */
 #define RV3028_BACKUP_BSM     0x0C  /* 37h switchover mode; 00 = disabled */
 
-/* Read the time block again, with BSF cleared before and checked after. A
- * switchover to backup disables the chip's I2C (4.2), so the rest of a read
- * comes back 0xFF; a tail starting inside the year byte can still be valid
- * BCD, a year too high. False if the read is not known to be whole. */
-static bool rv3028_read_steady(const struct rtc_desc *d, uint8_t blk[7])
+/* Read or write the time block with BSF cleared before and checked after. A
+ * switchover to backup disables the chip's I2C mid-transfer (4.2): a read's
+ * tail comes back 0xFF, which inside the year byte can still be valid BCD,
+ * and a write keeps only the bytes before the cut. False unless the transfer
+ * is known to be whole. */
+static bool rv3028_steady(const struct rtc_desc *d, uint8_t blk[7], bool write)
 {
 	uint8_t st;
 
 	return i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_STATUS,
 				   RV3028_STATUS_BSF, 0) == 0 &&
-	       i2c_burst_read(d->bus, d->addr, d->time_reg, blk, 7) == 0 &&
+	       (write ? i2c_burst_write(d->bus, d->addr, d->time_reg, blk, 7)
+		      : i2c_burst_read(d->bus, d->addr, d->time_reg, blk, 7)) == 0 &&
 	       i2c_reg_read_byte(d->bus, d->addr, RV3028_REG_STATUS, &st) == 0 &&
 	       !(st & RV3028_STATUS_BSF);
 }
@@ -494,11 +496,13 @@ static bool rtc_probe(uint32_t *epoch_out)
 
 #if RTC_RV3028_CFG
 		/* Only a clean identification is configured: the store writes to
-		 * the device at once. */
+		 * the device at once. Nor right after a switchover: the EEPROM
+		 * needs VDD (4.6.8). */
 		bool clean = v == RTC_FOUND;
 
-		if (clean && d->cfg != NULL && !rv3028_read_steady(d, blk)) {
+		if (clean && d->cfg != NULL && !rv3028_steady(d, blk, false)) {
 			v = RTC_FOUND_GARBLED;
+			clean = false;
 		}
 #endif
 		if (s_active == NULL) {
@@ -602,7 +606,22 @@ void zephcore_rtc_save(uint32_t epoch)
 	blk[5] = BIN2BCD(m);
 	blk[6] = BIN2BCD((unsigned)(y % 100));
 
-	if (i2c_burst_write(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) != 0) {
+	bool ok;
+
+#if RTC_RV3028_CFG
+	if (d->cfg != NULL) {
+		/* A torn write leaves a mixed time that reads as valid: write once
+		 * more, then zero the year so the next boot does not restore it. */
+		ok = rv3028_steady(d, blk, true) || rv3028_steady(d, blk, true);
+		if (!ok) {
+			(void)i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, 0x00);
+		}
+	} else
+#endif
+	{
+		ok = i2c_burst_write(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) == 0;
+	}
+	if (!ok) {
 		LOG_WRN("RTC %s: time write failed", d->name);
 		return;
 	}
