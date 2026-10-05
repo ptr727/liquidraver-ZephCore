@@ -44,6 +44,24 @@ static uint32_t _atoi(const char* sp) {
 	return n;
 }
 
+/* A paging start index, clamped to total while it is parsed: _atoi()'s
+ * uint32_t goes negative as an int, and wraps itself on a long digit string. */
+static int parse_start_index(const char* sp, int total)
+{
+	uint32_t limit = total > 0 ? (uint32_t)total : 0;
+	uint32_t value = 0;
+
+	while (*sp >= '0' && *sp <= '9') {
+		uint32_t digit = (uint32_t)(*sp++ - '0');
+
+		if (value > limit / 10 || (value == limit / 10 && digit > limit % 10)) {
+			return total;
+		}
+		value = value * 10 + digit;
+	}
+	return (int)value;
+}
+
 /* ---- "default" keyword + strict numeric parsing for the `set` path ----
  *
  * Bare atoi()/atof() fold every non-numeric string to 0, the word "default"
@@ -583,28 +601,45 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 			strcpy(reply, "can't find custom var");
 		}
 	} else if (memcmp(command, "sensor list", 11) == 0) {
+		/* A page with rows after it keeps room for "... next:N" (9 + 10
+		 * digits + terminator), or it could not be resumed. */
+		const size_t marker = 20;
+		char* lim = reply + replyCap(sender_timestamp);
 		char* dp = reply;
 		int start = 0;
 		int end = _sensors->getNumSettings();
 		if (strlen(command) > 11) {
-			start = _atoi(command + 12);
+			start = parse_start_index(command + 12, end);
 		}
 		if (start >= end) {
 			strcpy(reply, "no custom var");
 		} else {
-			snprintf(dp, CLI_REPLY_SIZE - (dp - reply), "%d vars\n", end);
+			snprintf(dp, lim - dp, "%d vars\n", end);
 			dp = strchr(dp, 0);
 			int i;
-			for (i = start; i < end && (dp - reply < 134); i++) {
-				snprintf(dp, CLI_REPLY_SIZE - (dp - reply), "%s=%s\n",
-				    _sensors->getSettingName(i),
-				    _sensors->getSettingValue(i));
+			for (i = start; i < end; i++) {
+				const char* name = _sensors->getSettingName(i);
+				const char* value = _sensors->getSettingValue(i);
+
+				if (name == NULL || value == NULL) {
+					end = i;  /* nothing further to list */
+					break;
+				}
+				size_t space = lim - dp;
+				size_t avail = (i + 1 < end && space > marker) ? space - marker : space;
+
+				/* A page's first row is written even if truncated, so the
+				 * marker always advances. */
+				if (strlen(name) + strlen(value) + 2 >= avail && i > start) {
+					break;
+				}
+				snprintf(dp, avail, "%s=%s\n", name, value);
 				dp = strchr(dp, 0);
 			}
 			if (i < end) {
-				snprintf(dp, CLI_REPLY_SIZE - (dp - reply), "... next:%d", i);
-			} else {
-				*(dp - 1) = 0;  // remove last CR
+				snprintf(dp, lim - dp, "... next:%d", i);
+			} else if (dp > reply && dp[-1] == '\n') {
+				dp[-1] = 0;  // remove last CR
 			}
 		}
 	} else if (memcmp(command, "gps on", 6) == 0) {
