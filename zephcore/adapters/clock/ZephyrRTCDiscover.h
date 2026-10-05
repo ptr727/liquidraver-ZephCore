@@ -39,16 +39,17 @@ extern "C" {
  * At a descriptor with rv3028-eeprom-config, the time is read once more with
  * the chip's backup switch flag (BSF) cleared before and checked after, and
  * is not taken if the read failed or BSF was set. A chip adopted on a read
- * that identified it (not on a failed second read), and whose BSF read was
- * clean, has that config stored: after the power-on refresh (up to ~66 ms),
- * backup switchover is turned off while the EEPROM is read, each byte that
- * differs is written, and a refresh from EEPROM restores it. Measured on a
- * RAK4631: about 14 ms when nothing is written, 52 ms for two bytes, then up
- * to 2 ms for DSM to react (4.2.2). If the store fails, the config is set in
- * RAM, which lasts until the chip's next refresh from EEPROM (daily while
- * EERD is clear), and the store is retried on the system work queue every
- * 10 minutes, at most 3 times. Returns false if none present or no
- * trustworthy time is held.
+ * that identified it (not on a failed second read), with BSF clear, has that
+ * config stored at once: after the power-on refresh (up to ~66 ms), backup
+ * switchover is turned off while the EEPROM is read, each byte that differs
+ * is written, and a refresh from EEPROM restores it. Measured on a RAK4631:
+ * about 14 ms when nothing is written, 52 ms for two bytes, then up to 2 ms
+ * for DSM to react (4.2.2). If the store fails, the config is set in RAM,
+ * which lasts until the chip's next refresh from EEPROM (daily while EERD is
+ * clear). A failed store, or one skipped at boot, is retried on the system
+ * work queue every 10 minutes, at most 3 times, each retry identifying the
+ * chip again first. Returns false if none present or no trustworthy time is
+ * held.
  */
 bool zephcore_rtc_restore(uint32_t *epoch_out);
 
@@ -60,8 +61,9 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
  * 0xFF, the first save probes again, once per boot, in the caller's context.
  * A device ruled out on its second read is not probed again for that reason.
  * At a descriptor with rv3028-eeprom-config the time is written with BSF
- * cleared before and checked after, once more if that fails, and if both
- * fail the year register is zeroed so the next boot takes no time from it.
+ * cleared before and checked after. A write not confirmed that way is
+ * repeated every 5 s on the system work queue, with the time run on, until
+ * one is confirmed or a newer save replaces it.
  */
 void zephcore_rtc_save(uint32_t epoch);
 

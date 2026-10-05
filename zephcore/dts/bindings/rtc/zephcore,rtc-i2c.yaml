@@ -66,8 +66,10 @@ properties:
       own refresh from EEPROM keeps it. If that fails, the config is set
       in the RAM mirror, which lasts until the chip's next refresh from
       EEPROM (daily while EERD is clear), and the store is retried up to
-      3 times, 10 minutes apart. The time is read at boot and written on
-      each sync with the chip's backup switch flag cleared before and
-      checked after. Set it only on a board whose backup supply is
+      3 times, 10 minutes apart, identifying the chip again first; a
+      boot whose read could not identify it cleanly waits for those
+      retries. The time is read at boot and written on each sync with the
+      chip's backup switch flag cleared before and checked after, and a
+      write not confirmed is repeated until one is. Set it only on a board whose backup supply is
       known: trickle charging suits a supercapacitor or rechargeable
       cell, never a primary cell.

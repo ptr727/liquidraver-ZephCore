@@ -227,6 +227,41 @@ static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 	return RTC_FOUND;
 }
 
+/* The 7-byte BCD time block for an epoch, in d's register order. */
+static void rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk[7])
+{
+	int y;
+	unsigned m, day;
+	civil_from_days((int64_t)epoch / 86400, &y, &m, &day);
+	unsigned rem  = epoch % 86400;
+	unsigned hour = rem / 3600;
+	unsigned min  = (rem % 3600) / 60;
+	unsigned sec  = rem % 60;
+	unsigned dow  = (unsigned)(((epoch / 86400) + 4) % 7);  /* 1970-01-01 = Thu */
+
+	blk[0] = BIN2BCD(sec);
+	blk[1] = BIN2BCD(min);
+	blk[2] = BIN2BCD(hour);
+	/* weekday occupies whichever of index 3/4 the date doesn't. */
+	blk[d->date_index] = BIN2BCD(day);
+	blk[d->date_index == 4 ? 3 : 4] = (uint8_t)dow;
+	blk[5] = BIN2BCD(m);
+	blk[6] = BIN2BCD((unsigned)(y % 100));
+}
+
+/* Clear the power-loss flag (for chips whose flag is a separate reg;
+ * the seconds-bit chips clear it implicitly when we wrote sec above). */
+static void rtc_clear_power_flag(const struct rtc_desc *d)
+{
+	if (d->status_reg != RTC_STATUS_IN_SECONDS) {
+		uint8_t st;
+		if (i2c_reg_read_byte(d->bus, d->addr, d->status_reg, &st) == 0) {
+			(void)i2c_reg_write_byte(d->bus, d->addr, d->status_reg,
+						 st & (uint8_t)~d->status_mask);
+		}
+	}
+}
+
 #if RTC_RV3028_CFG
 
 /* RV3028 registers for reading and writing its configuration EEPROM. */
@@ -248,8 +283,8 @@ static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 /* Read or write the time block with BSF cleared before and checked after. A
  * switchover to backup disables the chip's I2C mid-transfer (4.2): a read's
  * tail comes back 0xFF, which inside the year byte can still be valid BCD,
- * and a write keeps only the bytes before the cut. False unless the transfer
- * is known to be whole. */
+ * and a write's data integrity is no longer guaranteed (5.10). False unless
+ * the transfer is known to be whole. */
 static bool rv3028_steady(const struct rtc_desc *d, uint8_t blk[7], bool write)
 {
 	uint8_t st;
@@ -463,10 +498,45 @@ static void rv3028_configure(const struct rtc_desc *d)
 	}
 }
 
+/* Identify the chip again before each retry, since the store writes to it at
+ * once: configure on a clean read, stop if two reads rule it out, and try
+ * later on a failed read or a switchover. */
 static void rv3028_cfg_retry_fn(struct k_work *work)
 {
+	const struct rtc_desc *d = s_active;
+	uint8_t blk[7];
+	enum rtc_verdict v = rtc_identify(d, blk);
+
 	ARG_UNUSED(work);
-	rv3028_configure(s_active);
+	if (v == RTC_FOUND && rv3028_steady(d, blk, false)) {
+		rv3028_configure(d);
+	} else if (v != RTC_NOT_THIS && ++s_cfg_tries <= RTC_CFG_RETRIES) {
+		k_work_schedule(&s_cfg_retry, RTC_CFG_RETRY);
+	}
+}
+
+/* A time write that a switchover may have cut is not left standing: it is
+ * repeated, with the time run on, until one is confirmed. */
+#define RTC_SAVE_RETRY K_SECONDS(5)
+
+static uint32_t s_save_epoch;
+static int64_t s_save_at;
+static void rv3028_save_retry_fn(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(s_save_retry, rv3028_save_retry_fn);
+
+static void rv3028_save_retry_fn(struct k_work *work)
+{
+	uint8_t blk[7];
+
+	ARG_UNUSED(work);
+	rtc_time_block(s_active, s_save_epoch +
+		       (uint32_t)((k_uptime_get() - s_save_at) / 1000), blk);
+	if (!rv3028_steady(s_active, blk, true)) {
+		k_work_schedule(&s_save_retry, RTC_SAVE_RETRY);
+		return;
+	}
+	rtc_clear_power_flag(s_active);
+	LOG_INF("RTC %s: time write confirmed on retry", s_active->name);
 }
 
 #endif /* RTC_RV3028_CFG */
@@ -510,6 +580,8 @@ static bool rtc_probe(uint32_t *epoch_out)
 #if RTC_RV3028_CFG
 			if (clean) {
 				rv3028_configure(d);
+			} else if (d->cfg != NULL) {
+				k_work_schedule(&s_cfg_retry, RTC_CFG_RETRY);
 			}
 #endif
 		}
@@ -587,54 +659,27 @@ void zephcore_rtc_save(uint32_t epoch)
 	}
 
 	const struct rtc_desc *d = s_active;
-	int y;
-	unsigned m, day;
-	civil_from_days((int64_t)epoch / 86400, &y, &m, &day);
-	unsigned rem  = epoch % 86400;
-	unsigned hour = rem / 3600;
-	unsigned min  = (rem % 3600) / 60;
-	unsigned sec  = rem % 60;
-	unsigned dow  = (unsigned)(((epoch / 86400) + 4) % 7);  /* 1970-01-01 = Thu */
-
 	uint8_t blk[7];
-	blk[0] = BIN2BCD(sec);
-	blk[1] = BIN2BCD(min);
-	blk[2] = BIN2BCD(hour);
-	/* weekday occupies whichever of index 3/4 the date doesn't. */
-	blk[d->date_index] = BIN2BCD(day);
-	blk[d->date_index == 4 ? 3 : 4] = (uint8_t)dow;
-	blk[5] = BIN2BCD(m);
-	blk[6] = BIN2BCD((unsigned)(y % 100));
 
-	bool ok;
-
+	rtc_time_block(d, epoch, blk);
 #if RTC_RV3028_CFG
 	if (d->cfg != NULL) {
-		/* A torn write leaves a mixed time that reads as valid: write once
-		 * more, then zero the year so the next boot does not restore it. */
-		ok = rv3028_steady(d, blk, true) || rv3028_steady(d, blk, true);
-		if (!ok) {
-			(void)i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, 0x00);
+		(void)k_work_cancel_delayable(&s_save_retry);
+		s_save_epoch = epoch;
+		s_save_at = k_uptime_get();
+		if (!rv3028_steady(d, blk, true)) {
+			LOG_WRN("RTC %s: time write not confirmed, repeating every 5 s",
+				d->name);
+			k_work_schedule(&s_save_retry, RTC_SAVE_RETRY);
+			return;
 		}
 	} else
 #endif
-	{
-		ok = i2c_burst_write(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) == 0;
-	}
-	if (!ok) {
+	if (i2c_burst_write(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) != 0) {
 		LOG_WRN("RTC %s: time write failed", d->name);
 		return;
 	}
-
-	/* Clear the power-loss flag (for chips whose flag is a separate reg;
-	 * the seconds-bit chips clear it implicitly when we wrote sec above). */
-	if (d->status_reg != RTC_STATUS_IN_SECONDS) {
-		uint8_t st;
-		if (i2c_reg_read_byte(d->bus, d->addr, d->status_reg, &st) == 0) {
-			(void)i2c_reg_write_byte(d->bus, d->addr, d->status_reg,
-						 st & (uint8_t)~d->status_mask);
-		}
-	}
+	rtc_clear_power_flag(d);
 	LOG_DBG("RTC %s: persisted time", d->name);
 }
 
