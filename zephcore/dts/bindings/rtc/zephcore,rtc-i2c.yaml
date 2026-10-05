@@ -6,10 +6,11 @@
 # the properties below. This keeps the boot-time RTC restore compact
 # (~2-3 KB total, "Path B") instead of pulling in the full RTC subsystem.
 #
-# All supported chips use a 7-byte BCD time block (sec, min, hour, then
-# weekday/date, month, year) starting at "time-reg". The day-of-month byte
-# offset varies between parts, captured by "date-index", and so does the
-# weekday encoding, captured by "weekday-one-hot".
+# All supported chips use a 7-byte time block (sec, min, hour, then
+# weekday/date, month, year) starting at "time-reg", BCD in every field but
+# the weekday. The day-of-month byte offset varies between parts, captured
+# by "date-index", and so does the weekday encoding, a number 0-6 or one bit
+# per day, captured by "weekday-one-hot".
 
 description: ZephCore data-only I2C RTC descriptor (raw-I2C, no Zephyr RTC driver)
 
