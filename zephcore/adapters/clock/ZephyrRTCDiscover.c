@@ -282,9 +282,7 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
 
 /* Year 00h first and the real year last: a write cut by a power loss, which
  * no retry can repeat, leaves year 2000, read at boot as "time not yet set"
- * rather than as a mixed time. The final year write overwrites whatever a
- * tick before it changed, and the burst's seconds restart the prescaler
- * (4.5.1), so no tick lands after it unless the last write is a second late. */
+ * rather than as a mixed time. */
 static bool rv3028_write_time(const struct rtc_desc *d, const uint8_t blk[7])
 {
 	return i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, 0x00) == 0 &&
@@ -438,11 +436,10 @@ static enum rv3028_store rv3028_store_config(const struct rtc_desc *d)
 	}
 
 	/* The Refresh did not run or did not finish, so RAM may still hold BSM
-	 * 00. Write 37h as configured, RAM only, once EEbusy reads 0. If it
-	 * never does, leave switchover off rather than enable it during an
-	 * EEPROM operation (3.15.6); the retry or the daily refresh restores
-	 * it. Clearing EERD below while EEbusy may still be set is our
-	 * judgement: 4.6.7 only describes it after EEbusy is 0. */
+	 * 00. Write 37h as configured, RAM only, once EEbusy reads 0, never
+	 * during an EEPROM operation (3.15.6). Clearing EERD below while
+	 * EEbusy may still be set is our judgement: 4.6.7 only describes it
+	 * after EEbusy is 0. */
 	if (held && !refreshed && rv3028_eeprom_idle(d)) {
 		(void)i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_CFG_LAST,
 					 rv3028_cfg_backup_ram(d, backup));
@@ -476,8 +473,7 @@ static bool rv3028_set_ram(const struct rtc_desc *d)
 }
 
 /* A failed store is retried on the system work queue, a few times per boot
- * only: a password-locked chip, or a part at the address that is not an
- * RV3028, never succeeds, and every attempt writes to it again. */
+ * only, since every attempt writes to the chip again. */
 #define RTC_CFG_RETRY K_MINUTES(10)
 #define RTC_CFG_RETRIES 3
 
@@ -534,11 +530,8 @@ static void rv3028_cfg_retry_fn(struct k_work *work)
 }
 
 /* A time write that a switchover may have cut is repeated, with the time run
- * on, until one is confirmed, for about a minute: a chip that stopped
- * answering never confirms. Confirmed means acknowledged with BSF clear, not
- * read back, so a password-locked chip that ignores the writes passes. A
- * power loss that takes the MCU down too is covered by rv3028_write_time()'s
- * order instead. */
+ * on, until one is confirmed, for about a minute. A power loss that takes the
+ * MCU down too is covered by rv3028_write_time()'s order instead. */
 #define RTC_SAVE_RETRY K_SECONDS(5)
 #define RTC_SAVE_RETRIES 12
 
