@@ -3,7 +3,7 @@
  *
  * Compact raw-I2C hardware-RTC auto-discovery. See ZephyrRTCDiscover.h.
  *
- * Register layouts (sec/min/hour/.../month/year, all BCD) and the per-chip
+ * Register layouts (sec/min/hour/.../month/year) and the per-chip
  * power-loss flags are carried in devicetree via the "zephcore,rtc-i2c"
  * binding, so this reader is generic — adding a new chip is a DT node, not
  * code. Maps were taken from Zephyr's own drivers (rtc_pcf8563.c,
