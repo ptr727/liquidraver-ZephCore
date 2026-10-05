@@ -280,6 +280,17 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
 #define RV3028_REG_CFG_LAST   0x37  /* EEPROM Backup */
 #define RV3028_BACKUP_BSM     0x0C  /* 37h switchover mode; 00 = disabled */
 
+/* Year 00h first and the real year last: a write cut by a power loss, which
+ * no retry can repeat, leaves year 2000, read at boot as "time not yet set"
+ * rather than as a mixed time. Writing seconds restarts the prescaler
+ * (4.5.1), so no tick lands between the three writes. */
+static bool rv3028_write_time(const struct rtc_desc *d, const uint8_t blk[7])
+{
+	return i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, 0x00) == 0 &&
+	       i2c_burst_write(d->bus, d->addr, d->time_reg, blk, 6) == 0 &&
+	       i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, blk[6]) == 0;
+}
+
 /* Read or write the time block with BSF cleared before and checked after. A
  * switchover to backup disables the chip's I2C mid-transfer (4.2): a read's
  * tail comes back 0xFF, which inside the year byte can still be valid BCD,
@@ -291,8 +302,8 @@ static bool rv3028_steady(const struct rtc_desc *d, uint8_t blk[7], bool write)
 
 	return i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_STATUS,
 				   RV3028_STATUS_BSF, 0) == 0 &&
-	       (write ? i2c_burst_write(d->bus, d->addr, d->time_reg, blk, 7)
-		      : i2c_burst_read(d->bus, d->addr, d->time_reg, blk, 7)) == 0 &&
+	       (write ? rv3028_write_time(d, blk)
+		      : i2c_burst_read(d->bus, d->addr, d->time_reg, blk, 7) == 0) &&
 	       i2c_reg_read_byte(d->bus, d->addr, RV3028_REG_STATUS, &st) == 0 &&
 	       !(st & RV3028_STATUS_BSF);
 }
@@ -426,10 +437,12 @@ static enum rv3028_store rv3028_store_config(const struct rtc_desc *d)
 	}
 
 	/* The Refresh did not run or did not finish, so RAM may still hold BSM
-	 * 00. Once an EEPROM operation still running has had the chance to
-	 * finish, write 37h as configured: RAM only, never an older value. */
-	if (held && !refreshed) {
-		(void)rv3028_eeprom_idle(d);
+	 * 00. Write 37h as configured, RAM only, once EEbusy reads 0. If it
+	 * never does, leave switchover off rather than enable it during an
+	 * EEPROM operation (3.15.6); the retry or the daily refresh restores
+	 * it. Clearing EERD below while EEbusy may still be set is our
+	 * judgement: 4.6.7 only describes it after EEbusy is 0. */
+	if (held && !refreshed && rv3028_eeprom_idle(d)) {
 		(void)i2c_reg_write_byte(d->bus, d->addr, RV3028_REG_CFG_LAST,
 					 rv3028_cfg_backup_ram(d, backup));
 	}
@@ -488,9 +501,10 @@ static void rv3028_configure(const struct rtc_desc *d)
 			"(attempt %u)", d->name, s_cfg_tries);
 		break;
 	case RV3028_NOT_STORED:
-		(void)rv3028_eeprom_idle(d);
+		/* RAM only once EEbusy reads 0, as above. */
 		LOG_WRN("%s: config not stored in EEPROM, %s in RAM (attempt %u)", d->name,
-			rv3028_set_ram(d) ? "set" : "NOT set", s_cfg_tries);
+			rv3028_eeprom_idle(d) && rv3028_set_ram(d) ? "set" : "NOT set",
+			s_cfg_tries);
 		break;
 	}
 	if (s_cfg_tries <= RTC_CFG_RETRIES) {
@@ -515,12 +529,16 @@ static void rv3028_cfg_retry_fn(struct k_work *work)
 	}
 }
 
-/* A time write that a switchover may have cut is not left standing: it is
- * repeated, with the time run on, until one is confirmed. */
+/* A time write that a switchover may have cut is repeated, with the time run
+ * on, until one is confirmed, for about a minute: a password-locked chip or
+ * one that stopped answering never confirms. A power loss that takes the MCU
+ * down too is covered by rv3028_write_time()'s order instead. */
 #define RTC_SAVE_RETRY K_SECONDS(5)
+#define RTC_SAVE_RETRIES 12
 
 static uint32_t s_save_epoch;
 static int64_t s_save_at;
+static uint8_t s_save_tries;
 static void rv3028_save_retry_fn(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(s_save_retry, rv3028_save_retry_fn);
 
@@ -532,7 +550,12 @@ static void rv3028_save_retry_fn(struct k_work *work)
 	rtc_time_block(s_active, s_save_epoch +
 		       (uint32_t)((k_uptime_get() - s_save_at) / 1000), blk);
 	if (!rv3028_steady(s_active, blk, true)) {
-		k_work_schedule(&s_save_retry, RTC_SAVE_RETRY);
+		if (++s_save_tries < RTC_SAVE_RETRIES) {
+			k_work_schedule(&s_save_retry, RTC_SAVE_RETRY);
+		} else {
+			LOG_WRN("RTC %s: time write not confirmed after %u tries",
+				s_active->name, s_save_tries + 1U);
+		}
 		return;
 	}
 	rtc_clear_power_flag(s_active);
@@ -581,6 +604,7 @@ static bool rtc_probe(uint32_t *epoch_out)
 			if (clean) {
 				rv3028_configure(d);
 			} else if (d->cfg != NULL) {
+				s_cfg_tries++;  /* the skipped store is the first try */
 				k_work_schedule(&s_cfg_retry, RTC_CFG_RETRY);
 			}
 #endif
@@ -667,6 +691,7 @@ void zephcore_rtc_save(uint32_t epoch)
 		(void)k_work_cancel_delayable(&s_save_retry);
 		s_save_epoch = epoch;
 		s_save_at = k_uptime_get();
+		s_save_tries = 0;
 		if (!rv3028_steady(d, blk, true)) {
 			LOG_WRN("RTC %s: time write not confirmed, repeating every 5 s",
 				d->name);

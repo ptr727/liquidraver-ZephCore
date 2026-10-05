@@ -46,9 +46,10 @@ extern "C" {
  * about 14 ms when nothing is written, 52 ms for two bytes, then up to 2 ms
  * for DSM to react (4.2.2). If the store fails, the config is set in RAM,
  * which lasts until the chip's next refresh from EEPROM (daily while EERD is
- * clear). A failed store, or one skipped at boot, is retried on the system
- * work queue every 10 minutes, at most 3 times, each retry identifying the
- * chip again first. Returns false if none present or no trustworthy time is
+ * clear), and only once EEbusy reads 0; otherwise switchover is left off
+ * until a retry or that refresh. A failed store, or one skipped at boot, is
+ * retried on the system work queue every 10 minutes, at most 3 times, each
+ * retry identifying the chip again first. Returns false if none present or no trustworthy time is
  * held.
  */
 bool zephcore_rtc_restore(uint32_t *epoch_out);
@@ -61,9 +62,12 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
  * 0xFF, the first save probes again, once per boot, in the caller's context.
  * A device ruled out on its second read is not probed again for that reason.
  * At a descriptor with rv3028-eeprom-config the time is written with BSF
- * cleared before and checked after. A write not confirmed that way is
- * repeated every 5 s on the system work queue, with the time run on, until
- * one is confirmed or a newer save replaces it.
+ * cleared before and checked after, year 00h first and the real year last,
+ * so a write cut by a power loss reads at boot as "time not yet set". A
+ * write not confirmed is repeated every 5 s on the system work queue, with
+ * the time run on, until one is confirmed, a newer save replaces it, or 12
+ * attempts have failed. Call only from the system work queue: the repeat
+ * shares state with this call.
  */
 void zephcore_rtc_save(uint32_t epoch);
 
