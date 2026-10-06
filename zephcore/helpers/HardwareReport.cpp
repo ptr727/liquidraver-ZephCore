@@ -306,20 +306,34 @@ bool declared_names_at(const char *bus, uint16_t addr, char *out, size_t cap)
 }
 #endif /* CONFIG_I2C */
 
-/* Candidates the probe could not settle either way: a "none present" is only
- * true when this is zero. */
-unsigned rtc_unprobed_count(void)
+/* One copy of discovery's outcome. A re-probe can publish a new one from the
+ * system work queue while `hw` renders, so every line comes from this copy
+ * rather than from separate reads. */
+constexpr size_t kRtcMax = DT_NUM_INST_STATUS_OKAY(zephcore_rtc_i2c) > 0
+				   ? DT_NUM_INST_STATUS_OKAY(zephcore_rtc_i2c) : 1;
+
+struct RtcView {
+	struct zephcore_rtc_entry e[kRtcMax];
+	size_t n;
+	int active;         /* index into e, or -1 */
+	unsigned unsettled; /* unprobed or all 0xFF: a "none present" is only
+			     * true when this is zero */
+};
+
+void rtc_view(RtcView *v)
 {
-	unsigned n = 0;
-
-	for (size_t i = 0; i < zephcore_rtc_declared(); i++) {
-		struct zephcore_rtc_entry e;
-
-		if (zephcore_rtc_get(i, &e) && e.state == ZEPHCORE_RTC_UNPROBED) {
-			n++;
+	v->n = zephcore_rtc_snapshot(v->e, kRtcMax);
+	v->active = -1;
+	v->unsettled = 0;
+	for (size_t i = 0; i < v->n; i++) {
+		if (v->e[i].active) {
+			v->active = (int)i;
+		}
+		if (v->e[i].state == ZEPHCORE_RTC_UNPROBED ||
+		    v->e[i].state == ZEPHCORE_RTC_ALL_FF) {
+			v->unsettled++;
 		}
 	}
-	return n;
 }
 
 const char *rtc_state_str(enum zephcore_rtc_state st)
@@ -327,6 +341,7 @@ const char *rtc_state_str(enum zephcore_rtc_state st)
 	switch (st) {
 	case ZEPHCORE_RTC_PRESENT:  return "present";
 	case ZEPHCORE_RTC_ABSENT:   return "absent";
+	case ZEPHCORE_RTC_ALL_FF:   return "all 0xff";
 	default:                    return "unprobed";
 	}
 }
@@ -410,24 +425,25 @@ void section_rtc(Sink *s, mesh::RTCClock *rtc)
 		return;
 	}
 
-	struct zephcore_rtc_entry active;
-	if (zephcore_rtc_active(&active)) {
-		sink_line(s, "rtc: %s at 0x%02x on %s", active.name,
-			  active.addr, active.bus);
-	} else if (rtc_unprobed_count() > 0) {
-		sink_line(s, "rtc: none found, %u of %u declared unprobed",
-			  rtc_unprobed_count(), (unsigned)declared);
+	RtcView v;
+
+	rtc_view(&v);
+	if (v.active >= 0) {
+		const struct zephcore_rtc_entry *a = &v.e[v.active];
+
+		sink_line(s, "rtc: %s at 0x%02x on %s", a->name, a->addr, a->bus);
+	} else if (v.unsettled > 0) {
+		sink_line(s, "rtc: none found, %u of %u declared unsettled",
+			  v.unsettled, (unsigned)declared);
 	} else {
 		sink_line(s, "rtc: none present (%u declared)", (unsigned)declared);
 	}
 
-	for (size_t i = 0; i < declared; i++) {
-		struct zephcore_rtc_entry e;
-		if (!zephcore_rtc_get(i, &e)) {
-			continue;
-		}
-		sink_line(s, "  0x%02x %s %s%s", e.addr, e.name,
-			  rtc_state_str(e.state), e.active ? " *" : "");
+	for (size_t i = 0; i < v.n; i++) {
+		const struct zephcore_rtc_entry *e = &v.e[i];
+
+		sink_line(s, "  0x%02x %s %s%s", e->addr, e->name,
+			  rtc_state_str(e->state), e->active ? " *" : "");
 	}
 }
 
@@ -668,27 +684,29 @@ void section_summary(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 		sink_line(s, "fw %s role %s", cb->getFirmwareVer(), cb->getRole());
 	}
 
-	struct zephcore_rtc_entry active;
-	if (zephcore_rtc_active(&active)) {
+	RtcView v;
+
+	rtc_view(&v);
+	if (v.active >= 0) {
 		/* A devicetree node's full name already ends in "@<addr>", so the
 		 * address is not appended here -- doing so rendered
 		 * "rtc-rv3028@52@0x52" on real hardware. */
-		sink_line(s, "rtc %s", active.name);
+		sink_line(s, "rtc %s", v.e[v.active].name);
 	} else if (!IS_ENABLED(CONFIG_ZEPHCORE_RTC_AUTODISCOVER) &&
 		   DT_NUM_INST_STATUS_OKAY(zephcore_rtc_i2c) > 0) {
 		sink_line(s, "rtc autodiscovery disabled");
 	} else if (zephcore_rtc_declared() == 0) {
 		sink_line(s, "rtc none declared");
 	} else if (!zephcore_rtc_probed()) {
-		/* zephcore_rtc_active() is false both for "probed, none found"
+		/* No active entry means both "probed, none found"
 		 * and "not probed yet". Collapsing those into "none present"
 		 * states a fact discovery never established -- the distinction
 		 * `hw rtc` keeps, and a summary has no licence to be looser
 		 * about it than the section it summarises. */
 		sink_line(s, "rtc not yet probed");
 	} else {
-		if (rtc_unprobed_count() > 0) {
-			sink_line(s, "rtc none found, %u unprobed", rtc_unprobed_count());
+		if (v.unsettled > 0) {
+			sink_line(s, "rtc none found, %u unsettled", v.unsettled);
 		} else {
 			sink_line(s, "rtc none present");
 		}
