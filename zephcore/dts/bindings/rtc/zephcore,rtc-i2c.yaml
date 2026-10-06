@@ -67,15 +67,15 @@ properties:
     description: >
       [register mask zero]: the bit that reads set while the chip counts
       hours in 12-hour mode, and the bits of that register that always
-      read 0. Leave it out for a chip with no 12-hour mode. For a
-      register outside the time block the zero byte must name at least
-      one bit (the build checks): a read showing one set was cut short,
-      since a cut read ends in 1s, and such a read is never written
-      back. While the mode bit reads set, or cannot be read cleanly, no
-      time is taken from the chip; a set bit outside the time block is
-      then cleared at boot on the adopted chip. Each time write selects
-      24-hour mode first: a bit outside the time block is cleared, and
-      one inside it is cleared by the write's own hours byte.
+      read 0, which must not include the mode bit. Leave it out for a
+      chip with no 12-hour mode. For a register outside the time block
+      the zero byte must name at least one bit (the build checks both):
+      a read showing one set was cut short, since a cut read ends in 1s,
+      and such a read is never written back. While the mode bit reads
+      set, or cannot be read cleanly, no time is taken from the chip.
+      Each time write selects 24-hour mode first: a bit outside the time
+      block is cleared, and one inside it is cleared by the write's own
+      hours byte.
 
   rv3028-eeprom-config:
     type: uint8-array

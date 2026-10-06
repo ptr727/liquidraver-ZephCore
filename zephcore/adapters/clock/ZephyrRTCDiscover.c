@@ -69,7 +69,10 @@ DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_ZERO_ARRAY)
 		    BUILD_ASSERT((RTC_H12_REG(node) >= DT_PROP(node, time_reg) && \
 				  RTC_H12_REG(node) < DT_PROP(node, time_reg) + 7) || \
 				 DT_PROP_BY_IDX(node, twelve_hour_bit, 2) != 0, \
-				 "twelve-hour-bit outside the time block needs a zero bit");))
+				 "twelve-hour-bit outside the time block needs a zero bit"); \
+		    BUILD_ASSERT((DT_PROP_BY_IDX(node, twelve_hour_bit, 1) & \
+				  DT_PROP_BY_IDX(node, twelve_hour_bit, 2)) == 0, \
+				 "twelve-hour-bit zero bits overlap the mode bit");))
 
 DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_H12_CHECK)
 
@@ -677,9 +680,6 @@ static bool rtc_probe(uint32_t *epoch_out)
 		int h12 = rtc_12h(d, blk);
 
 		if (h12 != 0) {
-			if (d == s_active) {
-				(void)rtc_select_24h(d);  /* only the adopted chip */
-			}
 			LOG_WRN("%s present, %s — clock will be set on the next "
 				"GPS/app/CLI sync", d->name,
 				h12 > 0 ? "12-hour mode" : "hour mode unreadable");

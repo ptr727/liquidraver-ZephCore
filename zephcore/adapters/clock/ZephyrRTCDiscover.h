@@ -28,8 +28,7 @@ extern "C" {
  * sane time (year >= 2025 and its power-loss flag clear): store its Unix
  * epoch in *epoch_out and return true. The first chip found (valid time or
  * not) is remembered as the write-back target. No time is taken while the
- * descriptor's twelve-hour-bit reads set or cannot be read cleanly; a set
- * bit outside the time block is then cleared on the adopted chip. Returns
+ * descriptor's twelve-hour-bit reads set or cannot be read cleanly. Returns
  * false if none is present or none holds a trustworthy time.
  *
  * A descriptor with rv3028-eeprom-config also has that config stored in the
