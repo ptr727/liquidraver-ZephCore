@@ -574,14 +574,13 @@ static void rv3028_save_retry_fn(struct k_work *work)
 	    !rtc_time_block(s_active, s_save_epoch +
 			    (uint32_t)((k_uptime_get() - s_save_at) / 1000), blk)) {
 		s_save_mark = true;  /* the run-on time left 2000-2099 */
-		s_save_tries = 0;
 	}
 	if (s_save_mark ? !rv3028_mark_year(s_active) : !rv3028_steady(s_active, blk, true)) {
 		if (++s_save_tries < RTC_SAVE_RETRIES) {
 			k_work_schedule(&s_save_retry, RTC_SAVE_RETRY);
 		} else {
-			LOG_WRN("RTC %s: %s not confirmed after %u tries", s_active->name,
-				s_save_mark ? "year mark" : "time write", s_save_tries + 1U);
+			LOG_WRN("RTC %s: save not confirmed after %u tries",
+				s_active->name, s_save_tries + 1U);
 		}
 		return;
 	}
