@@ -40,6 +40,8 @@ struct rtc_desc {
 	uint8_t  status_mask;  /* "time unreliable" bit within status_reg */
 	const uint8_t *zero;   /* 7 bytes of bits the data sheet shows as 0, or NULL */
 	bool     week_one_hot; /* weekday as one bit per day, not 0-6 */
+	uint8_t  h12_reg;      /* register of the 12-hour mode bit */
+	uint8_t  h12_mask;     /* that bit, or 0 if the chip has no 12-hour mode */
 #if RTC_RV3028_CFG
 	const uint8_t *cfg;    /* rv3028-eeprom-config triplets, or NULL */
 	uint8_t  cfg_len;
@@ -91,6 +93,12 @@ DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_CFG_ARRAY)
 			DT_NODE_HAS_PROP(node, zero_mask),             \
 			(RTC_ZERO_NAME(node)), (NULL)),                \
 		.week_one_hot = DT_PROP(node, weekday_one_hot),       \
+		.h12_reg     = COND_CODE_1(                           \
+			DT_NODE_HAS_PROP(node, twelve_hour_bit),       \
+			(DT_PROP_BY_IDX(node, twelve_hour_bit, 0)), (0)), \
+		.h12_mask    = COND_CODE_1(                           \
+			DT_NODE_HAS_PROP(node, twelve_hour_bit),       \
+			(DT_PROP_BY_IDX(node, twelve_hour_bit, 1)), (0)), \
 		RTC_CFG_FIELDS(node)                                  \
 		.name        = DT_NODE_FULL_NAME(node),               \
 	},
@@ -264,6 +272,36 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
 	}
 }
 
+/* 1 if the chip counts hours in 12-hour mode, 0 if in 24-hour mode or it has
+ * none, -1 if a mode bit outside the time block could not be read. */
+static int rtc_12h(const struct rtc_desc *d, const uint8_t blk[7])
+{
+	uint8_t v;
+
+	if (d->h12_mask == 0) {
+		return 0;
+	}
+	if (d->h12_reg >= d->time_reg && d->h12_reg < d->time_reg + 7) {
+		return (blk[d->h12_reg - d->time_reg] & d->h12_mask) != 0;
+	}
+	if (i2c_reg_read_byte(d->bus, d->addr, d->h12_reg, &v) != 0) {
+		return -1;
+	}
+	return (v & d->h12_mask) != 0;
+}
+
+/* Select 24-hour mode. A mode bit outside the time block is cleared, and the
+ * RV3028 then converts its Hours register itself (02h, p. 15). One inside it
+ * (DS3231/DS1307 hours bit 6) is cleared by the time write's hours byte. */
+static bool rtc_select_24h(const struct rtc_desc *d)
+{
+	if (d->h12_mask == 0 ||
+	    (d->h12_reg >= d->time_reg && d->h12_reg < d->time_reg + 7)) {
+		return true;
+	}
+	return i2c_reg_update_byte(d->bus, d->addr, d->h12_reg, d->h12_mask, 0) == 0;
+}
+
 #if RTC_RV3028_CFG
 
 /* RV3028 registers for reading and writing its configuration EEPROM. */
@@ -287,7 +325,8 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
  * year 2000, so the next boot takes no time from it. */
 static bool rv3028_write_time(const struct rtc_desc *d, const uint8_t blk[7])
 {
-	return i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, 0x00) == 0 &&
+	return rtc_select_24h(d) &&
+	       i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, 0x00) == 0 &&
 	       i2c_burst_write(d->bus, d->addr, d->time_reg, blk, 6) == 0 &&
 	       i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, blk[6]) == 0;
 }
@@ -616,6 +655,15 @@ static bool rtc_probe(uint32_t *epoch_out)
 				"next GPS/app/CLI sync", d->name);
 			continue;
 		}
+		int h12 = rtc_12h(d, blk);
+
+		if (h12 != 0) {
+			(void)rtc_select_24h(d);
+			LOG_WRN("%s present, %s — clock will be set on the next "
+				"GPS/app/CLI sync", d->name,
+				h12 > 0 ? "12-hour mode" : "hour mode unreadable");
+			continue;
+		}
 		int flag = rtc_power_flag(d, blk);
 
 		if (flag != 0) {
@@ -701,7 +749,8 @@ void zephcore_rtc_save(uint32_t epoch)
 		}
 	} else
 #endif
-	if (i2c_burst_write(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) != 0) {
+	if (!rtc_select_24h(d) ||
+	    i2c_burst_write(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) != 0) {
 		LOG_WRN("RTC %s: time write failed", d->name);
 		return;
 	}

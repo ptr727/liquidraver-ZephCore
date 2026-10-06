@@ -35,8 +35,10 @@ extern "C" {
  * while the power-loss flag does not read as set (an unreadable flag counts
  * as not set), or, on the second read, all 0xFF. A failed second read never
  * rules a device out. A time is taken only from a clean read whose fields,
- * hours and year are each in range (12-hour mode is not decoded). Returns
- * false if none present or no trustworthy time is held.
+ * hours and year are each in range, and never while the descriptor's
+ * twelve-hour-bit reads set or cannot be read; a set bit outside the time
+ * block is then cleared. Returns false if none present or no trustworthy
+ * time is held.
  *
  * At a descriptor with rv3028-eeprom-config, the time is read once more
  * with the chip's backup switch flag (BSF) cleared before and checked
@@ -57,8 +59,8 @@ extern "C" {
 bool zephcore_rtc_restore(uint32_t *epoch_out);
 
 /*
- * Persist an authoritative epoch to the discovered RTC chip and clear its
- * power-loss flag. No-op if no RTC was discovered. Safe to call often, but
+ * Persist an authoritative epoch to the discovered RTC chip, selecting
+ * 24-hour mode first, and clear its power-loss flag. No-op if no RTC was discovered. Safe to call often, but
  * intended only for real syncs (GPS/app/CLI), not per-packet clock nudges.
  * If restore adopted nothing but skipped a candidate whose first read was all
  * 0xFF, the first save probes again, once per boot, in the caller's context.
