@@ -300,10 +300,17 @@ static bool rv3028_write_time(const struct rtc_desc *d, const uint8_t blk[7])
 }
 
 /* For a time outside 2000-2099, which is not written: mark the year alone,
- * so the next boot takes no time rather than the older one the chip holds. */
+ * so the next boot takes no time rather than the older one the chip holds.
+ * BSF is cleared before and checked after, as for a time write. */
 static bool rv3028_mark_year(const struct rtc_desc *d)
 {
-	return i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, RV3028_YEAR_UNSET) == 0;
+	uint8_t st;
+
+	return i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_STATUS,
+				   RV3028_STATUS_BSF, 0) == 0 &&
+	       i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, RV3028_YEAR_UNSET) == 0 &&
+	       i2c_reg_read_byte(d->bus, d->addr, RV3028_REG_STATUS, &st) == 0 &&
+	       !(st & RV3028_STATUS_BSF);
 }
 
 /* Read or write the time block with BSF cleared before and checked after. A
@@ -567,6 +574,7 @@ static void rv3028_save_retry_fn(struct k_work *work)
 	    !rtc_time_block(s_active, s_save_epoch +
 			    (uint32_t)((k_uptime_get() - s_save_at) / 1000), blk)) {
 		s_save_mark = true;  /* the run-on time left 2000-2099 */
+		s_save_tries = 0;
 	}
 	if (s_save_mark ? !rv3028_mark_year(s_active) : !rv3028_steady(s_active, blk, true)) {
 		if (++s_save_tries < RTC_SAVE_RETRIES) {

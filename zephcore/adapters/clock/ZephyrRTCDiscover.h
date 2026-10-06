@@ -60,8 +60,9 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
 
 /*
  * Persist an authoritative epoch within 2000-2099 to the discovered RTC chip
- * and clear its power-loss flag. No-op if no RTC was discovered. Safe to call often, but
- * intended only for real syncs (GPS/app/CLI), not per-packet clock nudges.
+ * and clear its power-loss flag. No-op if no RTC was discovered. Safe to
+ * call often, but intended only for real syncs (GPS/app/CLI), not
+ * per-packet clock nudges.
  * If restore adopted nothing but skipped a candidate whose first read was all
  * 0xFF, the first save probes again, once per boot, in the caller's context.
  * A device ruled out on its second read is not probed again for that reason.
