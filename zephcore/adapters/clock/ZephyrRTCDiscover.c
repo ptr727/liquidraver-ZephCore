@@ -309,9 +309,11 @@ static int rtc_12h(const struct rtc_desc *d, const uint8_t blk[7])
 		return 0;
 	}
 	if (d->h12_reg >= d->time_reg && d->h12_reg < d->time_reg + 7) {
-		return (blk[d->h12_reg - d->time_reg] & d->h12_mask) != 0;
+		v = blk[d->h12_reg - d->time_reg];
+	} else if (!rtc_read_h12_reg(d, &v)) {
+		return -1;
 	}
-	if (!rtc_read_h12_reg(d, &v)) {
+	if (v & d->h12_zero) {
 		return -1;
 	}
 	return (v & d->h12_mask) != 0;
