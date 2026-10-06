@@ -76,11 +76,11 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
  * have failed. Call only from the system work queue: the repeat shares
  * state with this call.
  *
- * A time outside 2000-2099 is not written, since the year is kept as two
- * BCD digits with no century, and the chip keeps its older time. At an
- * rv3028-eeprom-config descriptor the year is marked A0h instead, so the
- * next boot takes no time; the mark is confirmed and repeated like a time
- * write, and a repeat whose run-on time leaves 2000-2099 marks instead.
+ * A time outside 2000-2099 is not written, since ZephCore writes the year
+ * as two BCD digits and no century bit, and the chip keeps its older time.
+ * At an rv3028-eeprom-config descriptor the year is marked A0h instead, so
+ * the next boot takes no time; the mark is confirmed and repeated like a
+ * time write, and a repeat whose run-on time leaves 2000-2099 marks instead.
  */
 void zephcore_rtc_save(uint32_t epoch);
 

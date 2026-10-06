@@ -230,8 +230,8 @@ static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 }
 
 /* The 7-byte time block for an epoch, in d's register order. False outside
- * 2000-2099: the year is kept as two BCD digits with no century, so any
- * other year would be stored as one inside that range. */
+ * 2000-2099: ZephCore writes the year as two BCD digits and no century bit,
+ * so any other year would be stored as one inside that range. */
 static bool rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk[7])
 {
 	int y;
