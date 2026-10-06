@@ -53,9 +53,9 @@ extern "C" {
  * disabled it, until a retry or that refresh. A failed store, or one
  * skipped at boot, is retried on the system work queue every 10 minutes, at
  * most 3 times, each retry identifying the chip again first. At such a
- * descriptor a year of A0h-FEh is the mark a cut time write leaves, as
- * written or counted on by a New Year, and reads as "time not yet set"; FFh
- * is a failed read.
+ * descriptor a year of A0h-FEh reads as "time not yet set": that range holds
+ * the A0h mark a cut time write leaves and what a New Year counts it on to.
+ * FFh is a failed read.
  */
 bool zephcore_rtc_restore(uint32_t *epoch_out);
 
