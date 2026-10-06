@@ -32,7 +32,7 @@ extern "C" {
  *
  * A descriptor with rv3028-eeprom-config also has that config stored in the
  * chip's EEPROM, retried on the system work queue if it fails. There, a year
- * of A0h-FEh gives no time: the A0h mark, or a New Year's count on from it.
+ * of A0h-FEh gives no time.
  */
 bool zephcore_rtc_restore(uint32_t *epoch_out);
 
