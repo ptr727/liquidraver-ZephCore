@@ -281,15 +281,15 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
 #define RV3028_REG_CFG_FIRST  0x35  /* EEPROM Clkout */
 #define RV3028_REG_CFG_LAST   0x37  /* EEPROM Backup */
 #define RV3028_BACKUP_BSM     0x0C  /* 37h switchover mode; 00 = disabled */
+#define RV3028_YEAR_UNSET     0xA0  /* not BCD; a year of A0h-FEh reads "not set" */
 
-/* Year 00h first and the real year last: a power loss, which no retry can
- * repeat, cutting the write after the first byte and before the last leaves
- * year 2000, so the next boot takes no time from it. */
+/* Mark the year unset, then write all seven registers in one access (4.5),
+ * year last: the chip keeps each byte as it is acknowledged, so a write cut
+ * short leaves the mark and the next boot takes no time from it. */
 static bool rv3028_write_time(const struct rtc_desc *d, const uint8_t blk[7])
 {
-	return i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, 0x00) == 0 &&
-	       i2c_burst_write(d->bus, d->addr, d->time_reg, blk, 6) == 0 &&
-	       i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, blk[6]) == 0;
+	return i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, RV3028_YEAR_UNSET) == 0 &&
+	       i2c_burst_write(d->bus, d->addr, d->time_reg, blk, 7) == 0;
 }
 
 /* Read or write the time block with BSF cleared before and checked after. A
@@ -627,6 +627,15 @@ static bool rtc_probe(uint32_t *epoch_out)
 
 		uint8_t sb = blk[0] & 0x7F, mb = blk[1] & 0x7F, hb = blk[2] & 0x3F;
 		uint8_t db = blk[d->date_index] & 0x3F, ob = blk[5] & 0x1F, yb = blk[6];
+
+#if RTC_RV3028_CFG
+		/* A New Year counts a left mark on (A0h to A1h, A9h to B0h), never into
+		 * BCD. FFh is a read cut short. */
+		if (d->cfg != NULL && yb >= RV3028_YEAR_UNSET && yb != 0xFF) {
+			LOG_INF("%s present, time not yet set (year %02Xh)", d->name, yb);
+			continue;
+		}
+#endif
 
 		/* Identity leaves the hours and year unchecked, and may have let the
 		 * other fields pass on a flag read since; a time needs them all. */
