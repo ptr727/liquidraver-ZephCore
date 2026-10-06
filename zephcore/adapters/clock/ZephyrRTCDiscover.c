@@ -61,10 +61,15 @@ struct rtc_desc {
 
 DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_ZERO_ARRAY)
 
+#define RTC_H12_REG(node)  DT_PROP_BY_IDX(node, twelve_hour_bit, 0)
 #define RTC_H12_CHECK(node)                                           \
 	IF_ENABLED(DT_NODE_HAS_PROP(node, twelve_hour_bit),           \
 		   (BUILD_ASSERT(DT_PROP_LEN(node, twelve_hour_bit) == 3, \
-				 "twelve-hour-bit is [register mask zero]");))
+				 "twelve-hour-bit is [register mask zero]"); \
+		    BUILD_ASSERT((RTC_H12_REG(node) >= DT_PROP(node, time_reg) && \
+				  RTC_H12_REG(node) < DT_PROP(node, time_reg) + 7) || \
+				 DT_PROP_BY_IDX(node, twelve_hour_bit, 2) != 0, \
+				 "twelve-hour-bit outside the time block needs a zero bit");))
 
 DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_H12_CHECK)
 
