@@ -37,7 +37,7 @@ extern "C" {
  * rules a device out. A time is taken only from a clean read whose fields,
  * hours and year are each in range, and never while the descriptor's
  * twelve-hour-bit reads set or cannot be read; a set bit outside the time
- * block is then cleared. Returns false if none present or no trustworthy
+ * block is then cleared on the adopted chip. Returns false if none present or no trustworthy
  * time is held.
  *
  * At a descriptor with rv3028-eeprom-config, the time is read once more
@@ -60,8 +60,9 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
 
 /*
  * Persist an authoritative epoch to the discovered RTC chip, selecting
- * 24-hour mode first, and clear its power-loss flag. No-op if no RTC was discovered. Safe to call often, but
- * intended only for real syncs (GPS/app/CLI), not per-packet clock nudges.
+ * 24-hour mode first, and clear its power-loss flag. No-op if no RTC was
+ * discovered. Safe to call often, but intended only for real syncs
+ * (GPS/app/CLI), not per-packet clock nudges.
  * If restore adopted nothing but skipped a candidate whose first read was all
  * 0xFF, the first save probes again, once per boot, in the caller's context.
  * A device ruled out on its second read is not probed again for that reason.

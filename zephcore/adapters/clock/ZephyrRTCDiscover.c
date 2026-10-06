@@ -60,6 +60,13 @@ struct rtc_desc {
 
 DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_ZERO_ARRAY)
 
+#define RTC_H12_CHECK(node)                                           \
+	IF_ENABLED(DT_NODE_HAS_PROP(node, twelve_hour_bit),           \
+		   (BUILD_ASSERT(DT_PROP_LEN(node, twelve_hour_bit) == 2, \
+				 "twelve-hour-bit is [register mask]");))
+
+DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_H12_CHECK)
+
 #if RTC_RV3028_CFG
 #define RTC_CFG_NAME(node) _CONCAT(rtc_cfg_, DT_DEP_ORD(node))
 
@@ -292,14 +299,23 @@ static int rtc_12h(const struct rtc_desc *d, const uint8_t blk[7])
 
 /* Select 24-hour mode. A mode bit outside the time block is cleared, and the
  * RV3028 then converts its Hours register itself (02h, p. 15). One inside it
- * (DS3231/DS1307 hours bit 6) is cleared by the time write's hours byte. */
+ * (DS3231/DS1307 hours bit 6) is cleared by the time write's hours byte. A
+ * read of all 1s, a transfer cut short, is not written back: on the RV3028
+ * it would set every other Control 2 bit, and RESET always reads 0 there. */
 static bool rtc_select_24h(const struct rtc_desc *d)
 {
+	uint8_t v;
+
 	if (d->h12_mask == 0 ||
 	    (d->h12_reg >= d->time_reg && d->h12_reg < d->time_reg + 7)) {
 		return true;
 	}
-	return i2c_reg_update_byte(d->bus, d->addr, d->h12_reg, d->h12_mask, 0) == 0;
+	if (i2c_reg_read_byte(d->bus, d->addr, d->h12_reg, &v) != 0 || v == 0xFF) {
+		return false;
+	}
+	return !(v & d->h12_mask) ||
+	       i2c_reg_write_byte(d->bus, d->addr, d->h12_reg,
+				  v & (uint8_t)~d->h12_mask) == 0;
 }
 
 #if RTC_RV3028_CFG
@@ -658,7 +674,9 @@ static bool rtc_probe(uint32_t *epoch_out)
 		int h12 = rtc_12h(d, blk);
 
 		if (h12 != 0) {
-			(void)rtc_select_24h(d);
+			if (d == s_active) {
+				(void)rtc_select_24h(d);  /* only the adopted chip */
+			}
 			LOG_WRN("%s present, %s — clock will be set on the next "
 				"GPS/app/CLI sync", d->name,
 				h12 > 0 ? "12-hour mode" : "hour mode unreadable");

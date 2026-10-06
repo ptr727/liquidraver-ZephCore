@@ -63,14 +63,15 @@ properties:
       says so, such as the RX8130CE.
 
   twelve-hour-bit:
-    type: array
+    type: uint8-array
     description: >
-      <register mask>: the bit that reads set while the chip counts hours
+      [register mask]: the bit that reads set while the chip counts hours
       in 12-hour mode. Leave it out for a chip with no 12-hour mode. While
-      it reads set, or cannot be read, no time is taken from the chip, and
-      each time write selects 24-hour mode first: a bit outside the time
-      block is cleared, and one inside it is cleared by the write's own
-      hours byte.
+      it reads set, or cannot be read, no time is taken from the chip; a
+      set bit outside the time block is then cleared at boot on the
+      adopted chip. Each time write selects 24-hour mode first: a bit
+      outside the time block is cleared, and one inside it is cleared by
+      the write's own hours byte.
 
   rv3028-eeprom-config:
     type: uint8-array
