@@ -42,6 +42,7 @@ struct rtc_desc {
 	bool     week_one_hot; /* weekday as one bit per day, not 0-6 */
 	uint8_t  h12_reg;      /* register of the 12-hour mode bit */
 	uint8_t  h12_mask;     /* that bit, or 0 if the chip has no 12-hour mode */
+	uint8_t  h12_zero;     /* bits of h12_reg that always read 0 */
 #if RTC_RV3028_CFG
 	const uint8_t *cfg;    /* rv3028-eeprom-config triplets, or NULL */
 	uint8_t  cfg_len;
@@ -62,8 +63,8 @@ DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_ZERO_ARRAY)
 
 #define RTC_H12_CHECK(node)                                           \
 	IF_ENABLED(DT_NODE_HAS_PROP(node, twelve_hour_bit),           \
-		   (BUILD_ASSERT(DT_PROP_LEN(node, twelve_hour_bit) == 2, \
-				 "twelve-hour-bit is [register mask]");))
+		   (BUILD_ASSERT(DT_PROP_LEN(node, twelve_hour_bit) == 3, \
+				 "twelve-hour-bit is [register mask zero]");))
 
 DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_H12_CHECK)
 
@@ -106,6 +107,9 @@ DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_CFG_ARRAY)
 		.h12_mask    = COND_CODE_1(                           \
 			DT_NODE_HAS_PROP(node, twelve_hour_bit),       \
 			(DT_PROP_BY_IDX(node, twelve_hour_bit, 1)), (0)), \
+		.h12_zero    = COND_CODE_1(                           \
+			DT_NODE_HAS_PROP(node, twelve_hour_bit),       \
+			(DT_PROP_BY_IDX(node, twelve_hour_bit, 2)), (0)), \
 		RTC_CFG_FIELDS(node)                                  \
 		.name        = DT_NODE_FULL_NAME(node),               \
 	},
@@ -279,9 +283,18 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
 	}
 }
 
+/* Read the register holding an out-of-block 12-hour bit. False on a failed
+ * read, or one showing a bit that always reads 0: a read cut short ends in
+ * 1s (the RV3028's RESET, Control 2 bit 0, always reads 0, p. 24). */
+static bool rtc_read_h12_reg(const struct rtc_desc *d, uint8_t *v)
+{
+	return i2c_reg_read_byte(d->bus, d->addr, d->h12_reg, v) == 0 &&
+	       !(*v & d->h12_zero);
+}
+
 /* 1 if the chip counts hours in 12-hour mode, 0 if in 24-hour mode or it has
- * none, -1 if a mode bit outside the time block could not be read, or read
- * as all 1s, a transfer cut short (see rtc_select_24h()). */
+ * none, -1 if a mode bit outside the time block could not be read cleanly
+ * (see rtc_read_h12_reg()). */
 static int rtc_12h(const struct rtc_desc *d, const uint8_t blk[7])
 {
 	uint8_t v;
@@ -292,7 +305,7 @@ static int rtc_12h(const struct rtc_desc *d, const uint8_t blk[7])
 	if (d->h12_reg >= d->time_reg && d->h12_reg < d->time_reg + 7) {
 		return (blk[d->h12_reg - d->time_reg] & d->h12_mask) != 0;
 	}
-	if (i2c_reg_read_byte(d->bus, d->addr, d->h12_reg, &v) != 0 || v == 0xFF) {
+	if (!rtc_read_h12_reg(d, &v)) {
 		return -1;
 	}
 	return (v & d->h12_mask) != 0;
@@ -301,8 +314,7 @@ static int rtc_12h(const struct rtc_desc *d, const uint8_t blk[7])
 /* Select 24-hour mode. A mode bit outside the time block is cleared, and the
  * RV3028 then converts its Hours register itself (02h, p. 15). One inside it
  * (DS3231/DS1307 hours bit 6) is cleared by the time write's hours byte. A
- * read of all 1s, a transfer cut short, is not written back: on the RV3028
- * it would set every other Control 2 bit, and RESET always reads 0 there. */
+ * read that was not clean is never written back. */
 static bool rtc_select_24h(const struct rtc_desc *d)
 {
 	uint8_t v;
@@ -311,7 +323,7 @@ static bool rtc_select_24h(const struct rtc_desc *d)
 	    (d->h12_reg >= d->time_reg && d->h12_reg < d->time_reg + 7)) {
 		return true;
 	}
-	if (i2c_reg_read_byte(d->bus, d->addr, d->h12_reg, &v) != 0 || v == 0xFF) {
+	if (!rtc_read_h12_reg(d, &v)) {
 		return false;
 	}
 	return !(v & d->h12_mask) ||
