@@ -413,12 +413,14 @@ void section_rtc(Sink *s, mesh::RTCClock *rtc)
 	}
 
 	struct zephcore_rtc_entry active;
+	unsigned unsettled = rtc_unsettled_count();
+
 	if (zephcore_rtc_active(&active)) {
 		sink_line(s, "rtc: %s at 0x%02x on %s", active.name,
 			  active.addr, active.bus);
-	} else if (rtc_unsettled_count() > 0) {
+	} else if (unsettled > 0) {
 		sink_line(s, "rtc: none found, %u of %u declared unsettled",
-			  rtc_unsettled_count(), (unsigned)declared);
+			  unsettled, (unsigned)declared);
 	} else {
 		sink_line(s, "rtc: none present (%u declared)", (unsigned)declared);
 	}
@@ -689,8 +691,10 @@ void section_summary(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 		 * about it than the section it summarises. */
 		sink_line(s, "rtc not yet probed");
 	} else {
-		if (rtc_unsettled_count() > 0) {
-			sink_line(s, "rtc none found, %u unsettled", rtc_unsettled_count());
+		unsigned unsettled = rtc_unsettled_count();
+
+		if (unsettled > 0) {
+			sink_line(s, "rtc none found, %u unsettled", unsettled);
 		} else {
 			sink_line(s, "rtc none present");
 		}

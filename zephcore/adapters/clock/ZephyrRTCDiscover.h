@@ -28,16 +28,16 @@ extern "C" {
  * Probe the declared RTC chips in order, stopping at the first that holds a
  * sane time (year >= 2025 and its power-loss flag clear): store its Unix
  * epoch in *epoch_out and return true. The first chip found (valid time or
- * not) is remembered as the write-back target. A failed first read means
- * nothing is there, and a first read of all 0xFF (an erased EEPROM) is
- * skipped. Otherwise a device is passed over only if two reads each show it
- * is not that RTC: a bit set that the data sheet shows as 0 (the
- * descriptor's zero-mask), seconds, minutes, date or month out of range
- * while the power-loss flag does not read as set (an unreadable flag counts
- * as not set), or, on the second read, all 0xFF. A failed second read never
- * rules a device out. A time is taken only from a clean read whose fields,
- * hours and year are each in range (12-hour mode is not decoded). Returns
- * false if none present or no trustworthy time is held.
+ * not) is remembered as the write-back target. A failed first read is skipped
+ * (nothing is there, or nothing could be read), and so is a first read of all
+ * 0xFF (an erased EEPROM). Otherwise a device is passed over only if two
+ * reads each show it is not that RTC: a bit set that the data sheet shows as
+ * 0 (the descriptor's zero-mask), seconds, minutes, date or month out of
+ * range while the power-loss flag does not read as set (an unreadable flag
+ * counts as not set), or, on the second read, all 0xFF. A failed second read
+ * never rules a device out. A time is taken only from a clean read whose
+ * fields, hours and year are each in range (12-hour mode is not decoded).
+ * Returns false if none present or no trustworthy time is held.
  *
  * At a descriptor with rv3028-eeprom-config, the time is read once more
  * with the chip's backup switch flag (BSF) cleared before and checked
@@ -95,13 +95,15 @@ enum zephcore_rtc_state {
 	ZEPHCORE_RTC_UNPROBED = 0, /* not probed: discovery stopped before
 				    * reaching it, its bus was not ready, or
 				    * the read failed other than with -EIO */
-	ZEPHCORE_RTC_ABSENT,       /* no ACK, or two reads each showed a device
-				    * that is not this RTC */
+	ZEPHCORE_RTC_ABSENT,       /* the read ended in -EIO (no ACK; on nRF
+				    * also any bus error), or two reads each
+				    * showed a device that is not this RTC */
 	ZEPHCORE_RTC_PRESENT,      /* identified as this RTC, including one
 				    * whose time could not be read */
 	ZEPHCORE_RTC_ALL_FF,       /* the first read was all 0xFF: an erased
 				    * EEPROM, or an RTC that has not started.
-				    * Skipped; the first save probes again */
+				    * Skipped; if no chip was adopted, the
+				    * first save probes again */
 };
 
 /* A devicetree-declared "zephcore,rtc-i2c" candidate, plus its probe outcome. */

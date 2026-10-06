@@ -49,7 +49,7 @@ The text CLI of every ZephCore role. Commands are sent over USB serial (CDC-ACM)
 
 ---
 
-## Hardware Report
+## Hardware Report *(ZephCore only)*
 
 `hw` reports what the firmware is and what hardware it actually found. A release build
 compiles every `MESH_DEBUG_*` call away, so this is the only way to get these facts off a
@@ -133,7 +133,8 @@ Every field is something the firmware *knows*. It never infers:
   probe identified the chip as this RTC, which includes a chip whose time could not be read.
   The first chip identified is adopted for write-back (marked `*`).
 - `all 0xff` means the first read returned 0xFF in every byte: an erased EEPROM, or an RTC
-  that has not started. The probe skips it, and the first time save probes again. Like
+  that has not started. The probe skips it. If no RTC was adopted, the first time save
+  probes once more, which can settle it. Like
   `unprobed`, it keeps the summary at `none found, N unsettled` rather than `none present`.
 - A build with no sensor support reports `not compiled in`, which is a different statement
   from a sensor manager that looked and found nothing.

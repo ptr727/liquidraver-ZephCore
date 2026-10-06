@@ -204,12 +204,13 @@ static bool rtc_all_ff(const uint8_t blk[7])
 }
 
 /* Decide whether the device at d is the RTC it declares. A first read that
- * ends in an address NACK (-EIO on the nRF and ESP32 drivers) means nothing
- * is there; a bus that is not ready, or any other failure, is RTC_UNREAD,
- * no evidence either way. A first read that is all 0xFF is an erased EEPROM,
- * though a real RTC can power up that way, so it is skipped for now.
- * Otherwise the device is ruled out only when two reads each rule it out: a
- * failed second read does not, an all-0xFF second read does, and an
+ * ends in -EIO means nothing is there: that is an address NACK on the nRF and
+ * ESP32 drivers, though a data NACK, and on nRF any bus error event, read the
+ * same. A bus that is not ready, or any other failure, such as a timeout, is
+ * RTC_UNREAD, no evidence either way. A first read that is all 0xFF is an
+ * erased EEPROM, though a real RTC can power up that way, so it is skipped
+ * for now. Otherwise the device is ruled out only when two reads each rule it
+ * out: a failed second read does not, an all-0xFF second read does, and an
  * unreadable power-loss flag cannot vouch for the fields. RTC_FOUND leaves
  * the block to decode in blk; RTC_FOUND_GARBLED is this RTC with no clean
  * read to take a time from. */
@@ -577,20 +578,11 @@ static void rv3028_save_retry_fn(struct k_work *work)
 
 #endif /* RTC_RV3028_CFG */
 
-/* Probe the chips in order; cache the first one found in s_active. Stop at
- * the first that holds a sane time, returned via epoch_out. */
-static bool rtc_probe(uint32_t *epoch_out)
+/* Probe the chips in order; cache the first one found in s_active and each
+ * outcome in state[]. Stop at the first that holds a sane time, returned via
+ * epoch_out. */
+static bool rtc_probe_run(uint32_t *epoch_out, uint8_t state[])
 {
-	/* Clear last run's outcomes. rtc_probe() can run more than once --
-	 * zephcore_rtc_save() probes if restore never ran, or again after an
-	 * all-0xFF skip -- and it returns early once a chip holds a valid time.
-	 * Without this reset, candidates the later run never reached would keep
-	 * the previous run's outcome, which is precisely the stale claim
-	 * UNPROBED exists to avoid. The adopted chip is part of the same
-	 * outcome, so it is reset too. */
-	memset(s_state, ZEPHCORE_RTC_UNPROBED, sizeof(s_state));
-	s_active = NULL;
-	s_skipped_ff = false;
 
 	for (size_t i = 0; i < ARRAY_SIZE(rtc_descs); i++) {
 		const struct rtc_desc *d = &rtc_descs[i];
@@ -601,20 +593,20 @@ static bool rtc_probe(uint32_t *epoch_out)
 			continue;
 		}
 		if (v == RTC_ERASED) {
-			s_state[i] = ZEPHCORE_RTC_ALL_FF;
+			state[i] = ZEPHCORE_RTC_ALL_FF;
 			s_skipped_ff = true;
 			continue;
 		}
 		if (v == RTC_NOT_THIS) {
-			s_state[i] = ZEPHCORE_RTC_ABSENT;
+			state[i] = ZEPHCORE_RTC_ABSENT;
 			LOG_INF("%s: device at the address is not this RTC, skipped", d->name);
 			continue;
 		}
 		if (v == RTC_ABSENT) {
-			s_state[i] = ZEPHCORE_RTC_ABSENT;
+			state[i] = ZEPHCORE_RTC_ABSENT;
 			continue;
 		}
-		s_state[i] = ZEPHCORE_RTC_PRESENT;
+		state[i] = ZEPHCORE_RTC_PRESENT;
 
 #if RTC_RV3028_CFG
 		/* Only a clean identification is configured: the store writes to
@@ -687,6 +679,25 @@ static bool rtc_probe(uint32_t *epoch_out)
 		return true;
 	}
 	return false;
+}
+
+/* rtc_probe() can run more than once: zephcore_rtc_save() probes if restore
+ * never ran, or again after an all-0xFF skip. Each run starts from no outcome,
+ * so candidates it never reached report UNPROBED rather than the previous
+ * run's answer. The outcomes are collected locally and published at the end,
+ * so `hw` reading s_state from another thread meanwhile sees the previous
+ * run's, not a cleared table. */
+static bool rtc_probe(uint32_t *epoch_out)
+{
+	uint8_t state[ARRAY_SIZE(rtc_descs)];
+	bool found;
+
+	memset(state, ZEPHCORE_RTC_UNPROBED, sizeof(state));
+	s_active = NULL;
+	s_skipped_ff = false;
+	found = rtc_probe_run(epoch_out, state);
+	memcpy(s_state, state, sizeof(state));
+	return found;
 }
 
 bool zephcore_rtc_restore(uint32_t *epoch_out)

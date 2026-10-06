@@ -736,7 +736,7 @@ Listen-only node (ESP32 only): receives LoRa packets and publishes them to an MQ
 ### 6.6 CommonCLI Commands
 
 System: `ver`, `board`, `reboot`, `start dfu`, `start ota`, `erase`
-Hardware: `hw`, `hw board/rtc/i2c [scan]/gps/sensors/all` — see `Repeater_CLI_commands.md`
+Hardware: `hw`, `hw board/rtc/i2c [scan]/gps/sensors/all` — see `CLI_commands.md`
 Config: `set name/freq/radio/tx/flood.max/password/...`, corresponding getters
 System (power): `poweroff`/`shutdown`, `get pwrmgt.support/source/bootreason/bootmv`
 GPS: `gps`, `gps on/off/sync/setloc/advert`, `get gps`, `set gps duty <sec>`
