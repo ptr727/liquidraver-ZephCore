@@ -321,10 +321,11 @@ static int rtc_12h(const struct rtc_desc *d, const uint8_t blk[7])
 
 /* Select 24-hour mode: clear an out-of-block bit (the RV3028 converts its
  * Hours itself, 02h); an in-block one (DS3231 hours bit 6) is cleared by the
- * time write's hours byte. */
+ * time write's hours byte. The clear is read back and written once more if
+ * it differs, which repairs a write torn by a switchover (5.10). */
 static bool rtc_select_24h(const struct rtc_desc *d)
 {
-	uint8_t v;
+	uint8_t v, w, r;
 
 	if (d->h12_mask == 0 ||
 	    (d->h12_reg >= d->time_reg && d->h12_reg < d->time_reg + 7)) {
@@ -333,9 +334,19 @@ static bool rtc_select_24h(const struct rtc_desc *d)
 	if (!rtc_read_h12_reg(d, &v)) {
 		return false;
 	}
-	return !(v & d->h12_mask) ||
-	       i2c_reg_write_byte(d->bus, d->addr, d->h12_reg,
-				  v & (uint8_t)~d->h12_mask) == 0;
+	if (!(v & d->h12_mask)) {
+		return true;
+	}
+	w = v & (uint8_t)~d->h12_mask;
+	for (int tries = 0; tries < 2; tries++) {
+		if (i2c_reg_write_byte(d->bus, d->addr, d->h12_reg, w) != 0) {
+			return false;
+		}
+		if (i2c_reg_read_byte(d->bus, d->addr, d->h12_reg, &r) == 0 && r == w) {
+			return true;
+		}
+	}
+	return false;
 }
 
 #if RTC_RV3028_CFG
