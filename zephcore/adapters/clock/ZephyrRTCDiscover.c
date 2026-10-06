@@ -283,9 +283,9 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
 #define RV3028_BACKUP_BSM     0x0C  /* 37h switchover mode; 00 = disabled */
 #define RV3028_YEAR_UNSET     0xA0  /* not BCD; a year of A0h-FEh reads "not set" */
 
-/* Mark the year unset, then write all seven registers in one access (4.5),
- * year last: the chip keeps each byte as it is acknowledged, so a write cut
- * short leaves the mark and the next boot takes no time from it. */
+/* Mark the year A0h, then write all seven registers in one access (4.5),
+ * year last. The chip keeps each byte as it is acknowledged, so a write cut
+ * after the mark leaves it, and the next boot takes no time from it. */
 static bool rv3028_write_time(const struct rtc_desc *d, const uint8_t blk[7])
 {
 	return i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, RV3028_YEAR_UNSET) == 0 &&
@@ -629,8 +629,8 @@ static bool rtc_probe(uint32_t *epoch_out)
 		uint8_t db = blk[d->date_index] & 0x3F, ob = blk[5] & 0x1F, yb = blk[6];
 
 #if RTC_RV3028_CFG
-		/* A New Year counts a left mark on (A0h to A1h, A9h to B0h), never into
-		 * BCD. FFh is a read cut short. */
+		/* A New Year counts a left mark on (A0h to A1h, A9h to B0h). FFh is a
+		 * read cut short. */
 		if (d->cfg != NULL && yb >= RV3028_YEAR_UNSET && yb != 0xFF) {
 			LOG_INF("%s present, time not yet set (year %02Xh)", d->name, yb);
 			continue;

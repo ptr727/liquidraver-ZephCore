@@ -40,9 +40,7 @@ extern "C" {
  *
  * At a descriptor with rv3028-eeprom-config, the time is read once more
  * with the chip's backup switch flag (BSF) cleared before and checked
- * after, and is not taken if the read failed or BSF was set. A year of
- * A0h-FEh there, the mark a cut write leaves, reads as "time not yet set";
- * FFh is a failed read. A chip adopted
+ * after, and is not taken if the read failed or BSF was set. A chip adopted
  * on a read that identified it (not on a failed second read), with BSF
  * clear, has that config stored at once: after the power-on refresh (up to
  * ~66 ms), backup switchover is turned off while the EEPROM is read, each
@@ -54,7 +52,10 @@ extern "C" {
  * otherwise switchover stays as the store left it, off once the store has
  * disabled it, until a retry or that refresh. A failed store, or one
  * skipped at boot, is retried on the system work queue every 10 minutes, at
- * most 3 times, each retry identifying the chip again first.
+ * most 3 times, each retry identifying the chip again first. At such a
+ * descriptor a year of A0h-FEh is the mark a cut time write leaves, as
+ * written or counted on by a New Year, and reads as "time not yet set"; FFh
+ * is a failed read.
  */
 bool zephcore_rtc_restore(uint32_t *epoch_out);
 
@@ -67,13 +68,12 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
  * A device ruled out on its second read is not probed again for that reason.
  *
  * At a descriptor with rv3028-eeprom-config the time is written with BSF
- * cleared before and checked after: year A0h first, then all seven
- * registers in one burst, year last, so a write cut short reads at boot as
- * "time not yet set". A
- * write not confirmed is repeated every 5 s on the system work queue, with
- * the time run on, until one is confirmed, a newer save replaces it, or 12
- * repeats (13 attempts in all) have failed. Call only from the system work
- * queue: the repeat shares state with this call.
+ * cleared before and checked after: the year marked A0h, then all seven
+ * registers in one burst, so a write cut after the mark reads at boot as
+ * "time not yet set". A write not confirmed is repeated every 5 s on the
+ * system work queue, with the time run on, until one is confirmed, a newer
+ * save replaces it, or 12 repeats (13 attempts in all) have failed. Call
+ * only from the system work queue: the repeat shares state with this call.
  */
 void zephcore_rtc_save(uint32_t epoch);
 

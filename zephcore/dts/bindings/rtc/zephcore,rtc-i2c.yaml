@@ -84,7 +84,7 @@ properties:
       boot and written on each sync with the chip's backup switch flag
       cleared before and checked after. A write sets the year to A0h,
       then all seven registers in one burst, year last, so a write cut
-      short reads as "time not yet set", and a write not confirmed is
-      repeated every 5 s, up to 12 times. Set it only on a board whose backup supply is known:
-      trickle charging suits a supercapacitor or rechargeable cell,
-      never a primary cell.
+      after the mark reads as "time not yet set", and a write not
+      confirmed is repeated every 5 s, up to 12 times. Set it only on a
+      board whose backup supply is known: trickle charging suits a
+      supercapacitor or rechargeable cell, never a primary cell.
