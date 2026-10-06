@@ -66,10 +66,16 @@ DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_ZERO_ARRAY)
 	IF_ENABLED(DT_NODE_HAS_PROP(node, twelve_hour_bit),           \
 		   (BUILD_ASSERT(DT_PROP_LEN(node, twelve_hour_bit) == 3, \
 				 "twelve-hour-bit is [register mask zero]"); \
+		    BUILD_ASSERT(DT_PROP_BY_IDX(node, twelve_hour_bit, 1) != 0, \
+				 "twelve-hour-bit needs a mode bit"); \
+		    BUILD_ASSERT(!(RTC_H12_REG(node) >= DT_PROP(node, time_reg) && \
+				   RTC_H12_REG(node) < DT_PROP(node, time_reg) + 7) || \
+				 RTC_H12_REG(node) == DT_PROP(node, time_reg) + 2, \
+				 "twelve-hour-bit in the time block must be in hours"); \
 		    BUILD_ASSERT((RTC_H12_REG(node) >= DT_PROP(node, time_reg) && \
 				  RTC_H12_REG(node) < DT_PROP(node, time_reg) + 7) || \
-				 DT_PROP_BY_IDX(node, twelve_hour_bit, 2) != 0, \
-				 "twelve-hour-bit outside the time block needs a zero bit"); \
+				 (DT_PROP_BY_IDX(node, twelve_hour_bit, 2) & 0x01), \
+				 "twelve-hour-bit outside the time block needs bit 0 as a zero bit"); \
 		    BUILD_ASSERT((DT_PROP_BY_IDX(node, twelve_hour_bit, 1) & \
 				  DT_PROP_BY_IDX(node, twelve_hour_bit, 2)) == 0, \
 				 "twelve-hour-bit zero bits overlap the mode bit");))
@@ -348,9 +354,10 @@ static bool rtc_select_24h(const struct rtc_desc *d)
 #define RV3028_REG_CFG_LAST   0x37  /* EEPROM Backup */
 #define RV3028_BACKUP_BSM     0x0C  /* 37h switchover mode; 00 = disabled */
 
-/* Year 00h first and the real year last: a power loss, which no retry can
- * repeat, cutting the write after the first byte and before the last leaves
- * year 2000, so the next boot takes no time from it. */
+/* Year 00h before the other time bytes and the real year last (24-hour mode
+ * is selected before both): a power loss, which no retry can repeat, cutting
+ * the write after the first byte and before the last leaves year 2000, so
+ * the next boot takes no time from it. */
 static bool rv3028_write_time(const struct rtc_desc *d, const uint8_t blk[7])
 {
 	return rtc_select_24h(d) &&
