@@ -644,7 +644,7 @@ static bool rtc_probe(uint32_t *epoch_out)
 		uint8_t db = blk[d->date_index] & 0x3F, ob = blk[5] & 0x1F, yb = blk[6];
 
 #if RTC_RV3028_CFG
-		/* A0h-FEh holds the A0h mark; FFh is a cut read. */
+		/* A0h-FEh holds the A0h mark. */
 		if (d->cfg != NULL && yb >= RV3028_YEAR_UNSET && yb != 0xFF) {
 			LOG_INF("%s present, time not yet set (year %02Xh)", d->name, yb);
 			continue;
