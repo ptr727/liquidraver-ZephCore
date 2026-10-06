@@ -53,9 +53,8 @@ extern "C" {
  * disabled it, until a retry or that refresh. A failed store, or one
  * skipped at boot, is retried on the system work queue every 10 minutes, at
  * most 3 times, each retry identifying the chip again first. At such a
- * descriptor a year of A0h-FEh reads as "time not yet set": that range holds
- * the A0h mark a cut time write leaves and what a New Year counts it on to.
- * FFh is a failed read.
+ * descriptor no time is taken from a year of A0h-FEh, the range that holds
+ * the A0h mark and what a New Year counts it on to. FFh is a failed read.
  */
 bool zephcore_rtc_restore(uint32_t *epoch_out);
 
@@ -69,11 +68,17 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
  *
  * At a descriptor with rv3028-eeprom-config the time is written with BSF
  * cleared before and checked after: the year marked A0h, then all seven
- * registers in one burst, so a write cut after the mark reads at boot as
- * "time not yet set". A write not confirmed is repeated every 5 s on the
- * system work queue, with the time run on, until one is confirmed, a newer
- * save replaces it, or 12 repeats (13 attempts in all) have failed. Call
- * only from the system work queue: the repeat shares state with this call.
+ * registers in one burst, so a write cut between the mark and the year byte
+ * gives no time at the next boot. A write not confirmed is repeated every
+ * 5 s on the system work queue, with the time run on, until one is
+ * confirmed, a newer save replaces it, or 12 repeats (13 attempts in all)
+ * have failed. Call only from the system work queue: the repeat shares
+ * state with this call.
+ *
+ * A time outside 2000-2099 is not written, since the chip's two-digit year
+ * would store it as one inside that range. The chip keeps its older time,
+ * except at an rv3028-eeprom-config descriptor, where its year is marked
+ * A0h so that the next boot takes no time.
  */
 void zephcore_rtc_save(uint32_t epoch);
 
