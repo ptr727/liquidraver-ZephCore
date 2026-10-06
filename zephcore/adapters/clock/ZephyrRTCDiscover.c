@@ -691,26 +691,26 @@ static bool rtc_probe(uint32_t *epoch_out)
 			}
 #endif
 		}
+		/* Only the write-back target is set by a later sync. */
+		const char *then = d == s_active ?
+			" — clock will be set on the next GPS/app/CLI sync" : "";
 
 		if (v == RTC_FOUND_GARBLED) {
-			LOG_WRN("%s present, time unreadable — clock will be set on the "
-				"next GPS/app/CLI sync", d->name);
+			LOG_WRN("%s present, time unreadable%s", d->name, then);
 			continue;
 		}
 		int h12 = rtc_12h(d, blk);
 
 		if (h12 != 0) {
-			LOG_WRN("%s present, %s — clock will be set on the next "
-				"GPS/app/CLI sync", d->name,
-				h12 > 0 ? "12-hour mode" : "hour mode unreadable");
+			LOG_WRN("%s present, %s%s", d->name,
+				h12 > 0 ? "12-hour mode" : "hour mode unreadable", then);
 			continue;
 		}
 		int flag = rtc_power_flag(d, blk);
 
 		if (flag != 0) {
-			LOG_WRN("%s present, power-loss flag %s — clock will be set "
-				"on the next GPS/app/CLI sync", d->name,
-				flag > 0 ? "set" : "unreadable");
+			LOG_WRN("%s present, power-loss flag %s%s", d->name,
+				flag > 0 ? "set" : "unreadable", then);
 			continue;
 		}
 
@@ -720,8 +720,7 @@ static bool rtc_probe(uint32_t *epoch_out)
 		/* Identity leaves the hours and year unchecked, and may have let the
 		 * other fields pass on a flag read since; a time needs them all. */
 		if (!rtc_fields_ok(d, blk) || !bcd_field_ok(hb, 23) || !bcd_field_ok(yb, 99)) {
-			LOG_WRN("%s present, time unreadable — clock will be set on the "
-				"next GPS/app/CLI sync", d->name);
+			LOG_WRN("%s present, time unreadable%s", d->name, then);
 			continue;
 		}
 
