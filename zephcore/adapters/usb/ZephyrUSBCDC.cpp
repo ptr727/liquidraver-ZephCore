@@ -8,8 +8,9 @@
  *     SET_LINE_CODING requests reach us as events (no DTR polling)
  *   - Emits a k_event when DTR transitions high — the boot path waits on it
  *     instead of a fixed sleep
- *   - Fires a user callback on every DTR transition (companion: reset RX +
- *     flip active_iface on drop)
+ *   - Fires a user callback on every DTR transition (companion: end the
+ *     session on drop), and reports VBUS loss and a bus reset as a drop
+ *   - Fires a user callback on bus suspend, resume and reset
  *   - Handles the Arduino-style 1200-baud touch → reboot-to-bootloader flow
  *     for nRF52 boards
  */
@@ -71,6 +72,7 @@ static K_EVENT_DEFINE(usb_cdc_events);
 static bool s_dtr_active;
 static bool s_initialized;
 static zephcore_usbd_cdc_dtr_cb_t s_dtr_cb;
+static zephcore_usbd_cdc_bus_cb_t s_bus_cb;
 
 /* ZephyrBoard for bootloader-magic write before reset. The class is stateless
  * (only static methods over GPREGRET + sys_reboot), so a local instance here
@@ -84,6 +86,17 @@ static void enter_bootloader(void)
 	k_msleep(100);
 	usb_board.rebootToBootloader();
 	CODE_UNREACHABLE;
+}
+
+/* The host went away without a DTR=0: report it as a DTR drop. */
+static void host_gone(void)
+{
+	if (s_dtr_active) {
+		s_dtr_active = false;
+		if (s_dtr_cb) {
+			s_dtr_cb(false);
+		}
+	}
 }
 
 /* ===== USBD message callback ===== */
@@ -135,18 +148,24 @@ static void usbd_msg_callback(struct usbd_context *const ctx,
 			s_dtr_cb(dtr_now);
 		}
 	} else if (msg->type == USBD_MSG_VBUS_REMOVED) {
-		/* Physical unplug — VBUS lost.  On a device-side cable yank the
-		 * host often never sends a clean DTR=0 line-state change, so the
-		 * CONTROL_LINE_STATE release above won't fire and the companion
-		 * would stay stuck on the USB interface (rejecting every BLE
-		 * connection until reboot).  Treat VBUS loss as a DTR drop so the
-		 * interface is handed back to BLE. */
+		/* Unplugged: the host often sends no DTR=0, so VBUS loss counts as
+		 * a DTR drop. */
 		LOG_INF("CDC ACM: VBUS removed (device unplug)");
-		if (s_dtr_active) {
-			s_dtr_active = false;
-			if (s_dtr_cb) {
-				s_dtr_cb(false);
-			}
+		host_gone();
+	} else if (msg->type == USBD_MSG_RESET) {
+		/* The host is enumerating us again, so the port it had open is
+		 * gone, and no DTR=0 says so: a DTR drop too. A reset also ends a
+		 * suspend, with no RESUME. See docs/ARCHITECTURE.md 7.4. */
+		LOG_INF("CDC ACM: bus reset");
+		host_gone();
+		if (s_bus_cb) {
+			s_bus_cb();
+		}
+	} else if (msg->type == USBD_MSG_SUSPEND || msg->type == USBD_MSG_RESUME) {
+		LOG_INF("CDC ACM: bus %s",
+			msg->type == USBD_MSG_SUSPEND ? "suspended" : "resumed");
+		if (s_bus_cb) {
+			s_bus_cb();
 		}
 	}
 }
@@ -268,25 +287,25 @@ extern "C" void zephcore_usbd_set_dtr_cb(zephcore_usbd_cdc_dtr_cb_t cb)
 	s_dtr_cb = cb;
 }
 
+extern "C" bool zephcore_usbd_is_suspended(void)
+{
+	return s_initialized && usbd_is_suspended(&zephcore_usbd);
+}
+
+extern "C" void zephcore_usbd_set_bus_cb(zephcore_usbd_cdc_bus_cb_t cb)
+{
+	s_bus_cb = cb;
+}
+
 extern "C" void zephcore_usbd_detach(void)
 {
 	if (!s_initialized) {
 		return;
 	}
 
-	/* usbd_disable() -> udc_disable() drops the D+ pull-up, which is the only
-	 * thing that makes the host see an unplug.  A soft reset does not: on the
-	 * ESP32-S3, esp_restart_noos() resets WiFi/BT, timers, SPI, UART, DMA and
-	 * crypto but nothing USB, so the PHY pad stays enabled across the reset
-	 * and the host keeps talking to an endpoint the firmware has abandoned.
-	 * (Same root cause as GH #43, which hit the USB-Serial-JTAG controller;
-	 * this covers the USB OTG one that the CDC companion transport uses.)
-	 *
-	 * Safe from the usbd message callback: CONFIG_USBD_MSG_DEFERRED_MODE is
-	 * on by default, so that callback runs on the system workqueue rather
-	 * than in the device stack context, and usbd_disable() is not re-entered
-	 * from the thread it stops.
-	 */
+	/* Drop the D+ pull-up so the host sees an unplug; a soft reset alone does
+	 * not. Safe from the usbd message callback, which runs on the system work
+	 * queue (CONFIG_USBD_MSG_DEFERRED_MODE). */
 	(void)usbd_disable(&zephcore_usbd);
 	s_initialized = false;
 	s_dtr_active = false;

@@ -216,14 +216,9 @@ static bool rtc_all_ff(const uint8_t blk[7])
 	return true;
 }
 
-/* Decide whether the device at d is the RTC it declares. A first read that
- * fails means nothing is there, and one that is all 0xFF is an erased EEPROM,
- * though a real RTC can power up that way, so it is skipped for now.
- * Otherwise the device is ruled out only when two reads each rule it out: a
- * failed second read does not, an all-0xFF second read does, and an
- * unreadable power-loss flag cannot vouch for the fields. RTC_FOUND leaves
- * the block to decode in blk; RTC_FOUND_GARBLED is this RTC with no clean
- * read to take a time from. */
+/* Decide whether the device at d is the RTC it declares: ruled out only when
+ * two reads each rule it out. RTC_FOUND leaves the block to decode in blk;
+ * RTC_FOUND_GARBLED is this RTC with no clean read to take a time from. */
 static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 {
 	uint8_t again[7];
@@ -283,18 +278,15 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
 	}
 }
 
-/* Read the register holding an out-of-block 12-hour bit. False on a failed
- * read, or one showing a bit that always reads 0: a read cut short ends in
- * 1s (the RV3028's RESET, Control 2 bit 0, always reads 0, p. 24). */
+/* Read an out-of-block 12-hour mode register. False if the read failed or
+ * shows a bit that always reads 0, as a read cut short (ending in 1s) does. */
 static bool rtc_read_h12_reg(const struct rtc_desc *d, uint8_t *v)
 {
 	return i2c_reg_read_byte(d->bus, d->addr, d->h12_reg, v) == 0 &&
 	       !(*v & d->h12_zero);
 }
 
-/* 1 if the chip counts hours in 12-hour mode, 0 if in 24-hour mode or it has
- * none, -1 if a mode bit outside the time block could not be read cleanly
- * (see rtc_read_h12_reg()). */
+/* 1 in 12-hour mode, 0 in 24-hour mode or with none, -1 if unreadable. */
 static int rtc_12h(const struct rtc_desc *d, const uint8_t blk[7])
 {
 	uint8_t v;
@@ -311,10 +303,9 @@ static int rtc_12h(const struct rtc_desc *d, const uint8_t blk[7])
 	return (v & d->h12_mask) != 0;
 }
 
-/* Select 24-hour mode. A mode bit outside the time block is cleared, and the
- * RV3028 then converts its Hours register itself (02h, p. 15). One inside it
- * (DS3231/DS1307 hours bit 6) is cleared by the time write's hours byte. A
- * read that was not clean is never written back. */
+/* Select 24-hour mode: clear an out-of-block bit (the RV3028 converts its
+ * Hours itself, 02h); an in-block one (DS3231 hours bit 6) is cleared by the
+ * time write's hours byte. */
 static bool rtc_select_24h(const struct rtc_desc *d)
 {
 	uint8_t v;
@@ -454,16 +445,10 @@ static uint8_t rv3028_cfg_backup_ram(const struct rtc_desc *d, uint8_t ram)
 	return ram;
 }
 
-/* Store the descriptor's rv3028-eeprom-config in the chip's EEPROM. The
- * EEPROM is only touched with automatic refresh held off (4.6.7) and backup
- * switchover disabled in RAM (3.15.6: BSM 00 for any EEPROM read or write).
- * Each byte is compared against the EEPROM itself (4.6.6) and written only if
- * it differs (4.6.5). A closing Refresh (4.6.4) reloads RAM from the EEPROM,
- * switching back to the stored BSM, and the config is read back on every run.
- * A triplet outside 35h-37h, masking an unimplemented bit, or repeating a
- * register is ignored, so a devicetree mistake cannot write on every boot.
- * Reports whether the config was confirmed, and if so whether EERD, which
- * also stops the daily refresh, was cleared afterwards. */
+/* Store the descriptor's rv3028-eeprom-config in the chip's EEPROM, writing
+ * only bytes that differ, with refresh and backup switchover held off as the
+ * data sheet requires. Reports whether the config was confirmed, and if so
+ * whether EERD was cleared afterwards. */
 enum rv3028_store { RV3028_STORED, RV3028_EERD_SET, RV3028_NOT_STORED };
 
 static enum rv3028_store rv3028_store_config(const struct rtc_desc *d)

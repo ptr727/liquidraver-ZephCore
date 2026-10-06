@@ -34,7 +34,7 @@ ZephCore is a LoRa mesh networking firmware running on Zephyr RTOS. It supports 
 - **Room Server**: Headless store-and-forward shared message room (BBS). Reuses the repeater's ACL/region/CLI; pushes new posts to logged-in clients (per-client sync cursor + ACK).
 - **Observer** (ESP32): Listen-only node that publishes received LoRa packets to MQTT over WiFi.
 
-Supported hardware: nRF52840, nRF54L15, ESP32 (classic PICO-D4 and C3/C6/S3), EFR32MG24, and STM32WL (LoRa-E5). Radios: SX126x family (SX1261/62/68, LLCC68, STM32WL sub-GHz), LR1110, SX127x (SX1272/76/78, loramac-node backend), and LR2021 (validated on the MeshTracker X1). A native Linux port runs the full stack on SBCs (Femtofox, Raspberry Pi) via Zephyr `native_sim` — see `LINUX_NATIVE.md`.
+Supported hardware: nRF52840, nRF54L15, nRF54LM20A, ESP32 (classic PICO-D4 and C3/C6/S3), EFR32MG24, and STM32WL (LoRa-E5). Radios: SX126x family (SX1261/62/68, LLCC68, STM32WL sub-GHz), LR1110, SX127x (SX1272/76/78, loramac-node backend), and LR2021 (validated on the MeshTracker X1). A native Linux port runs the full stack on SBCs (Femtofox, Raspberry Pi) via Zephyr `native_sim` — see `LINUX_NATIVE.md`.
 
 ### Upstream Relationship
 
@@ -124,7 +124,7 @@ zephcore/
 ├── boards/                 # Board definitions
 │   ├── common/             # Shared configs, DTS includes, partition layouts
 │   ├── nrf52840/           # RAK4631, T1000-E, ThinkNode M1/M3/M6, T-Echo, T114, ...
-│   ├── nrf54l/             # XIAO nRF54L15
+│   ├── nrf54l/             # XIAO nRF54L15, Seeed LR2021 EVK (nRF54L15 and nRF54LM20A), ME25LS02
 │   ├── esp32/              # XIAO C3/C6/S3, Heltec V3/V4.x, Station G2, T-Beam, ...
 │   ├── mg24/               # XIAO MG24
 │   ├── stm32wl/            # Seeed LoRa-E5 mini
@@ -598,7 +598,8 @@ mesh::Mesh
 Handles the binary BLE protocol with ~50 command opcodes. Key features:
 - **Offline queue**: circular buffer with peek/confirm pattern (survives BLE drops); `CONFIG_ZEPHCORE_OFFLINE_QUEUE_SIZE`, default 256 frames (lowered on RAM-bound boards)
 - **ACK tracking**: 8-slot table, computes expected ACK = SHA256(secret + hash)[0:4]
-- **Contact iteration**: Streaming protocol with `lastmod` filtering for incremental sync
+- **Contact iteration**: Streaming protocol with `lastmod` filtering for incremental sync. The dump advances only
+  while a client is connected and every connected transport has room; it is cancelled when the last client leaves
 - **Lazy write batching**: Dirty contacts/channels flush after 5-second delay
 - **Protocol versioning**: V2/V3 frame format negotiation with phone app
 - **Ed25519 signing**: 3-phase flow (start→data→finish) for signing up to 8KB
@@ -721,6 +722,7 @@ Autonomous operation features:
 - **Permission levels**: GUEST(0), READ_ONLY(1), READ_WRITE(2), ADMIN(3)
 - **Region filtering**: `RegionMap` with transport key matching per flood packet
 - **Rate limiting**: 4 requests per 120s (discovery), 4 per 180s (anonymous), 4 failed logins per 180s
+- **Node discovery**: answers discovery requests only while forwarding is on. With `advert.interval` and `flood.advert.interval` both `0` the node is hidden and does not answer, as upstream (`isHiddenNode()`); the request still counts against the discovery rate limit
 - **Neighbor tracking**: RSSI/SNR/name/timestamp table (`CONFIG_ZEPHCORE_MAX_NEIGHBOURS`, default 50 slots)
 - **Temporary radio params**: `tempradio` command applies freq/bw/sf/cr via `LoRaRadio::setRadioOverride()` (does not mutate `_prefs`); auto-revert timer calls `clearRadioOverride()` to fall back to saved prefs
 - **WiFi+MQTT uplink** (ESP32, `CONFIG_ZEPHCORE_REPEATER_UPLINK`): `RepeaterUplink.cpp` reports packets observer-style while still repeating; configured via `set uplink.*` CLI
@@ -763,7 +765,7 @@ Full command reference with constraints and remote-admin restrictions: `CLI_comm
 - TX congestion control: queue (12 frames) + overflow buffer + retry + timeout watchdog
 - Fast/slow advertising switching with post-disconnect flap prevention
 - DLE (Data Length Extension) to 251 bytes
-- Interface coexistence: BLE vs USB, one active at a time
+- One of the companion transports served at the same time (BLE, USB/UART, TCP; [7.6](#76-wifi--mqtt--tcp-transports))
 - Debug: build with `debug.conf` plus `-DCONFIG_ZEPHCORE_BLE_LOG_LEVEL_DBG=y` for adapter-level DBG logging
 
 ### 7.2 DataStore (`adapters/datastore/`)
@@ -771,7 +773,9 @@ Full command reference with constraints and remote-admin restrictions: `CLI_comm
 - **Internal**: LittleFS on flash (`/lfs`), 256-byte cache for reduced flash I/O
 - **External**: Optional LittleFS on QSPI (`/ext`) with auto-migration. The flash is `zephyr,deferred-init` and `/ext` is
   not automounted (`boards/common/qspi-ext.dtsi`): `zephcore_fs_mount_ext()` brings it up on first use, because a
-  boot-time probe could beat a cold power rail (first boot after a UF2 update) and silently drop to internal flash
+  boot-time probe could beat a cold power rail (first boot after a UF2 update) and silently drop to internal flash.
+  Roles that keep nothing on `/ext` (repeater, room server, observer) put the flash into deep power-down at start-up
+  (`zephcore_fs_ext_power_down()`), with chip-select held high; a factory `erase` resumes it and puts it back
 - **BLE bonds**: NVS (`storage_partition`, 0xD0000 on nRF52) via Zephyr settings backend (≥1.16.2)
 - **Prefs**: `prefs.json` through upstream's `ConfigSerializer`, with upstream's key names for shared fields and ZephCore's own under `zc` (see §13); the older binary file is read once to migrate and kept
 - **Contacts**: 152-byte records, stored on external flash if available
@@ -829,9 +833,20 @@ Repeaters and room servers default to `CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC
 
 ### 7.4 USB (`adapters/usb/`)
 
-- **CompanionUSB**: V3-framed CDC (little-endian 16-bit length prefix + payload)
-- **RepeaterUSB**: Minimal CDC with 1200-baud DFU touch detection
-- Both share message queues with BLE adapter (transport-agnostic mesh layer)
+- **`ZephyrUSBCDC`** (every role): the USB device and its CDC ACM class, the 1200-baud touch into the bootloader, DTR
+  tracking, and `zephcore_usbd_detach()` before a reset (a soft reset leaves the ESP32-S3's PHY attached). A host that
+  went away is reported as a DTR drop in three cases: DTR low, VBUS removed, and a bus reset. The reset case exists
+  because the CDC class keeps the old line state across a reset, so nothing else says that the port the host had open
+  is gone (a hub resetting upstream leaves VBUS up). Bus suspend, resume and reset also reach a second callback.
+- **`ZephyrCompanionUSB`** (companion): the wired companion transport, over the CDC port or a plain UART
+  (`zephcore,companion-uart`). Framing: `<` (to the node) or `>` (from it), a little-endian 16-bit length, the payload;
+  a first byte that is printable and not `<` starts the text CLI instead. It has its own receive queue and an
+  interrupt-driven 2 KB TX ring whose "drained" callback paces the contact dump.
+- **Session rule**: a session starts on the first inbound frame or CLI line and ends on a DTR drop as defined above.
+  While the bus is suspended (the computer asleep with the port open) the session is kept but is not a connected
+  client: nothing is queued for it, and it does not hold up the clean-up that runs when the last client leaves. Each
+  change reaches the main loop as a connect or a disconnect.
+- Servers (repeater, room server, observer) use the CDC port as their serial console.
 
 ### 7.5 Board (`adapters/board/`)
 
@@ -845,7 +860,7 @@ Repeaters and room servers default to `CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC
 
 **Telemetry** (`REQ_TYPE_GET_TELEMETRY_DATA`, every role, upstream's shape): battery on channel 1, then `sensors.querySensors()` (`adapters/sensors/ZephyrSensorManager.cpp`): GPS position on channel 1 while the GPS is on and has a fix, each environment sensor and power-monitor channel found at boot on its own channel from 2 up (probe order), board-local analog sensors (T1000-E) on channel 1; then the MCU temperature on channel 1. Servers give guests battery + MCU temperature only and honour the requester's inverse permission mask, as upstream. Encoded by `helpers/compat/CayenneLPP.h`: upstream's library API and wire format, but values round to the nearest step where the library truncates.
 
-**Clock** (`adapters/clock/ZephyrRTCClock`): `setCurrentTime()` also writes the hardware RTC when the board has one (coalesced on the system work queue), as upstream's `AutoDiscoverRTCClock` writes its chip; `seedCurrentTime()` is the boot restore, not written back. Without a hardware RTC, the last time read is kept in no-init memory (RTC slow memory on ESP32) and restored after a reset that keeps RAM (reboot, crash, watchdog), as upstream's `ESP32RTCClock`; a power cycle starts from 1970 again.
+**Clock** (`adapters/clock/ZephyrRTCClock`): `setCurrentTime()` also writes the hardware RTC when the board has one (coalesced on the system work queue), as upstream's `AutoDiscoverRTCClock` writes its chip; `seedCurrentTime()` is the boot restore, not written back. A chip is adopted at boot only once it is identified (`adapters/clock/ZephyrRTCDiscover.c`), because other parts can answer at the same address: a device is passed over when two reads each show a bit set that the chip's data sheet fixes at zero, or a time field out of range, and a time is restored only from a read in which every field is valid. The time is written in each chip's own encoding (the RX8130CE takes a one-hot weekday, `weekday-one-hot` in its descriptor), and an RV-3028 whose descriptor carries `rv3028-eeprom-config` (the RAK12002 on a RAK4631) has that configuration, its backup switchover, stored in the chip's EEPROM. Without a hardware RTC, the last time read is kept in no-init memory (RTC slow memory on ESP32) and restored after a reset that keeps RAM (reboot, crash, watchdog), as upstream's `ESP32RTCClock`; a power cycle starts from 1970 again.
 
 **LED master switch** (`helpers/led_gate.{c,h}`, `set leds on|off`, all roles): one process-wide
 flag every LED driver consults — heartbeat and unread-message LEDs in `helpers/ui/ui_common.c`, the
@@ -984,6 +999,7 @@ prj.conf (base: console; production defaults — LOG=n, ASSERT=n)
 
 - **nRF52840**: Zephyr open-source BLE controller, UF2 bootloader, partial flash erase for BLE coexistence
 - **nRF54L15**: Same BLE controller as nRF52, CMSIS-DAP via SAMD11 bridge, no native USB
+- **nRF54LM20A** (the LR2021 EVK with a XIAO nRF54LM20A, its own board directory): built and flashed like the nRF54L15 (`--no-sysbuild`, CMSIS-DAP); source-only, no published firmware
 - **ESP32-C3/C6/S3**: Espressif proprietary BLE blob, 32KB heap, asserts disabled (blob IRQ false positives); simple-boot by default, MCUboot only with `--sysbuild` (WiFi OTA)
 - **ESP32 classic (PICO-D4)**: much smaller DRAM — contact/queue caps shrunk in `board.conf`; console/CLI on `uart0` (no native USB); DIO flash mode required (QIO bootloops)
 - **EFR32MG24**: SiLabs proprietary BLE blob, 32KB heap, SEMAILBOX enabled for hardware TRNG/crypto entropy, ADC disabled (no battery divider), CMSIS-DAP via onboard SAMD11
@@ -1005,6 +1021,8 @@ Applied automatically at CMake configure time; a failed patch aborts the configu
 | 0008-flash-sim-per-node-file | LOW | Flash simulator defaults to per-node settings file (native Linux) |
 | 0009-display-ssd16xx-fill-ram-white | LOW | E-paper full-refresh-to-white anti-ghosting helper |
 | 0010-uarte-pm-suspend-bounded-rxto-wait | MEDIUM | Bounds the nRF UARTE STOPRX/RXTO spin on PM suspend; unbounded upstream, wedges the mesh thread |
+| 0017-wifi-esp32-rx-never-block | MEDIUM | ESP32 Wi-Fi RX callback drops a frame instead of waiting 100 ms for a net buffer; the wait livelocked RX under load |
+| 0019-usb-cdc-acm-poll-out-flush | MEDIUM | USB CDC ACM: a full TX buffer is handed to the stack from `poll_out()` and `fifo_fill()`, and only the current buffer counts as free space while the bus is suspended. Without it console bursts are cut at 64 bytes and a companion can hang on its first reply after boot |
 
 **One patch per file.** No upstream file is touched by more than one patch, so
 apply order is irrelevant and no patch can be anchored inside another's added
@@ -1054,6 +1072,7 @@ Build strings: `docs/supported_boards.md`. Flash methods: `docs/BUILDING.md`. Ad
 | ProMicro SX1262 | nRF52840 | SX1262 (E22-900M30S) | Yes | - | Button, LED, battery ADC |
 | muzi works R1 Neo | nRF52840 | SX1262 | Yes | - | Buzzer, button, RX8130CE RTC, latched-rail power-off |
 | XIAO nRF54L15 | nRF54L15 | SX1262 | - | - | Contacts capped at 450 |
+| Seeed LR2021 LoRa Plus EVK | nRF54L15 or nRF54LM20A | **LR2021** | - | - | Two board directories, one per XIAO; the nRF54LM20A one is source-only |
 | XIAO ESP32-C3 | ESP32-C3 | SX1262 | - | - | Contacts capped at 300 |
 | XIAO ESP32-C6 | ESP32-C6 | SX1262 | - | - | - |
 | LilyGo TLoRa C6 | ESP32-C6 | SX1262 | - | - | - |
