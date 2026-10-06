@@ -82,7 +82,8 @@ void zephcore_rtc_save(uint32_t epoch);
  * until now kept both to itself, so a release build could not say what RTC it
  * is driving (every MESH_DEBUG_* call is compiled away). These expose that.
  * The one change to probing: each probe run starts from no adopted chip, so a
- * second run reports its own outcome rather than the first run's.
+ * second run reports its own outcome rather than the first run's, and a run
+ * publishes its outcome only when it ends.
  *
  * They report only what discovery actually established. The probe loop stops
  * at the first chip holding a valid time, so candidates after it are never
@@ -119,12 +120,12 @@ struct zephcore_rtc_entry {
  * devicetree, or 0 when there are none or autodiscovery is compiled out. */
 size_t zephcore_rtc_declared(void);
 
-/* Fill *out for declared candidate i. False if i is out of range. */
-bool zephcore_rtc_get(size_t i, struct zephcore_rtc_entry *out);
-
-/* Fill *out with the adopted chip. False if none was adopted, which includes
- * the case where discovery has not run yet -- check zephcore_rtc_probed(). */
-bool zephcore_rtc_active(struct zephcore_rtc_entry *out);
+/* Copy up to max candidates into out[], in declaration order, and return how
+ * many were copied. The states and the adopted marker come from one probe
+ * run, even while a re-probe runs on another thread. No entry is active when
+ * none was adopted, which includes discovery not having run yet -- check
+ * zephcore_rtc_probed(). */
+size_t zephcore_rtc_snapshot(struct zephcore_rtc_entry *out, size_t max);
 
 /* Has boot-time discovery run? If false, every state above is UNPROBED. */
 bool zephcore_rtc_probed(void);

@@ -110,6 +110,9 @@ static bool s_reprobed;
  * time, so "not absent" and "present" are different answers and we keep them
  * apart rather than inferring one from the other. */
 static uint8_t s_state[ARRAY_SIZE(rtc_descs)];
+/* Guards s_state and s_active together for zephcore_rtc_snapshot(): a
+ * re-probe publishes them from the system work queue while `hw` reads them. */
+static struct k_spinlock s_report_lock;
 
 #define BCD2BIN(x) ((((x) >> 4) & 0x0F) * 10 + ((x) & 0x0F))
 #define BIN2BCD(x) ((((x) / 10) << 4) | ((x) % 10))
@@ -578,10 +581,11 @@ static void rv3028_save_retry_fn(struct k_work *work)
 
 #endif /* RTC_RV3028_CFG */
 
-/* Probe the chips in order; cache the first one found in s_active and each
+/* Probe the chips in order; return the first one found in *adopted and each
  * outcome in state[]. Stop at the first that holds a sane time, returned via
  * epoch_out. */
-static bool rtc_probe_run(uint32_t *epoch_out, uint8_t state[])
+static bool rtc_probe_run(uint32_t *epoch_out, uint8_t state[],
+			  const struct rtc_desc **adopted)
 {
 
 	for (size_t i = 0; i < ARRAY_SIZE(rtc_descs); i++) {
@@ -619,8 +623,8 @@ static bool rtc_probe_run(uint32_t *epoch_out, uint8_t state[])
 			clean = false;
 		}
 #endif
-		if (s_active == NULL) {
-			s_active = d;  /* RTC => our write-back target */
+		if (*adopted == NULL) {
+			*adopted = d;  /* RTC => our write-back target */
 #if RTC_RV3028_CFG
 			if (clean) {
 				rv3028_configure(d);
@@ -682,21 +686,26 @@ static bool rtc_probe_run(uint32_t *epoch_out, uint8_t state[])
 }
 
 /* rtc_probe() can run more than once: zephcore_rtc_save() probes if restore
- * never ran, or again after an all-0xFF skip. Each run starts from no outcome,
- * so candidates it never reached report UNPROBED rather than the previous
- * run's answer. The outcomes are collected locally and published at the end,
- * so `hw` reading s_state from another thread meanwhile sees the previous
- * run's, not a cleared table. */
+ * never ran, or again after an all-0xFF skip with no chip adopted. Each run
+ * starts from no outcome, so candidates it never reached report UNPROBED
+ * rather than the previous run's answer. The outcomes and the adopted chip
+ * are collected locally and published together at the end, so `hw` sees
+ * one run or the other, never a mix. */
 static bool rtc_probe(uint32_t *epoch_out)
 {
 	uint8_t state[ARRAY_SIZE(rtc_descs)];
+	const struct rtc_desc *adopted = NULL;
 	bool found;
 
 	memset(state, ZEPHCORE_RTC_UNPROBED, sizeof(state));
-	s_active = NULL;
 	s_skipped_ff = false;
-	found = rtc_probe_run(epoch_out, state);
+	found = rtc_probe_run(epoch_out, state, &adopted);
+
+	k_spinlock_key_t key = k_spin_lock(&s_report_lock);
+
 	memcpy(s_state, state, sizeof(state));
+	s_active = adopted;
+	k_spin_unlock(&s_report_lock, key);
 	return found;
 }
 
@@ -748,43 +757,32 @@ void zephcore_rtc_save(uint32_t epoch)
 	LOG_DBG("RTC %s: persisted time", d->name);
 }
 
-static void rtc_fill(size_t i, struct zephcore_rtc_entry *out)
-{
-	const struct rtc_desc *d = &rtc_descs[i];
-
-	out->name   = d->name;
-	out->bus    = d->bus->name;
-	out->addr   = d->addr;
-	out->state  = (enum zephcore_rtc_state)s_state[i];
-	out->active = (s_active == d);
-}
-
 size_t zephcore_rtc_declared(void)
 {
 	return ARRAY_SIZE(rtc_descs);
 }
 
-bool zephcore_rtc_get(size_t i, struct zephcore_rtc_entry *out)
+size_t zephcore_rtc_snapshot(struct zephcore_rtc_entry *out, size_t max)
 {
-	if (out == NULL || i >= ARRAY_SIZE(rtc_descs)) {
-		return false;
-	}
-	rtc_fill(i, out);
-	return true;
-}
+	size_t n = MIN(max, ARRAY_SIZE(rtc_descs));
 
-bool zephcore_rtc_active(struct zephcore_rtc_entry *out)
-{
-	if (out == NULL || s_active == NULL) {
-		return false;
+	if (out == NULL) {
+		return 0;
 	}
-	for (size_t i = 0; i < ARRAY_SIZE(rtc_descs); i++) {
-		if (&rtc_descs[i] == s_active) {
-			rtc_fill(i, out);
-			return true;
-		}
+
+	k_spinlock_key_t key = k_spin_lock(&s_report_lock);
+
+	for (size_t i = 0; i < n; i++) {
+		const struct rtc_desc *d = &rtc_descs[i];
+
+		out[i].name   = d->name;
+		out[i].bus    = d->bus->name;
+		out[i].addr   = d->addr;
+		out[i].state  = (enum zephcore_rtc_state)s_state[i];
+		out[i].active = (s_active == d);
 	}
-	return false;
+	k_spin_unlock(&s_report_lock, key);
+	return n;
 }
 
 bool zephcore_rtc_probed(void)
@@ -810,17 +808,11 @@ size_t zephcore_rtc_declared(void)
 	return 0;
 }
 
-bool zephcore_rtc_get(size_t i, struct zephcore_rtc_entry *out)
-{
-	ARG_UNUSED(i);
-	ARG_UNUSED(out);
-	return false;
-}
-
-bool zephcore_rtc_active(struct zephcore_rtc_entry *out)
+size_t zephcore_rtc_snapshot(struct zephcore_rtc_entry *out, size_t max)
 {
 	ARG_UNUSED(out);
-	return false;
+	ARG_UNUSED(max);
+	return 0;
 }
 
 bool zephcore_rtc_probed(void)
