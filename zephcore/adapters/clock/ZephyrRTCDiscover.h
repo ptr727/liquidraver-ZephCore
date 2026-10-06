@@ -37,8 +37,8 @@ extern "C" {
  * rules a device out. A time is taken only from a clean read whose fields,
  * hours and year are each in range, and never while the descriptor's
  * twelve-hour-bit reads set or cannot be read; a set bit outside the time
- * block is then cleared on the adopted chip. Returns false if none present or no trustworthy
- * time is held.
+ * block is then cleared on the adopted chip. Returns false if none present
+ * or no trustworthy time is held.
  *
  * At a descriptor with rv3028-eeprom-config, the time is read once more
  * with the chip's backup switch flag (BSF) cleared before and checked

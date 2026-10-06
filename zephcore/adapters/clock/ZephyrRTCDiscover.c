@@ -280,7 +280,8 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
 }
 
 /* 1 if the chip counts hours in 12-hour mode, 0 if in 24-hour mode or it has
- * none, -1 if a mode bit outside the time block could not be read. */
+ * none, -1 if a mode bit outside the time block could not be read, or read
+ * as all 1s, a transfer cut short (see rtc_select_24h()). */
 static int rtc_12h(const struct rtc_desc *d, const uint8_t blk[7])
 {
 	uint8_t v;
@@ -291,7 +292,7 @@ static int rtc_12h(const struct rtc_desc *d, const uint8_t blk[7])
 	if (d->h12_reg >= d->time_reg && d->h12_reg < d->time_reg + 7) {
 		return (blk[d->h12_reg - d->time_reg] & d->h12_mask) != 0;
 	}
-	if (i2c_reg_read_byte(d->bus, d->addr, d->h12_reg, &v) != 0) {
+	if (i2c_reg_read_byte(d->bus, d->addr, d->h12_reg, &v) != 0 || v == 0xFF) {
 		return -1;
 	}
 	return (v & d->h12_mask) != 0;
