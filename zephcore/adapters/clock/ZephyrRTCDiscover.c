@@ -225,7 +225,7 @@ static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 }
 
 /* The 7-byte time block for an epoch, in d's register order. False outside
- * 2000-2099, which a two-digit BCD year with no century bit cannot hold. */
+ * 2000-2099: ZephCore writes the year as two BCD digits and no century bit. */
 static bool rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk[7])
 {
 	int y;
@@ -284,7 +284,7 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
 #define RV3028_YEAR_UNSET     0xA0  /* not BCD; a year of A0h-FEh reads "not set" */
 
 /* Mark the year A0h, then write all seven registers in one access (4.5):
- * a write cut before the year byte leaves the mark. */
+ * a write cut between the mark and the year byte leaves the mark. */
 static bool rv3028_write_time(const struct rtc_desc *d, const uint8_t blk[7])
 {
 	return i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, RV3028_YEAR_UNSET) == 0 &&
