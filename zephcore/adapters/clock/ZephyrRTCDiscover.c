@@ -197,14 +197,9 @@ static bool rtc_all_ff(const uint8_t blk[7])
 	return true;
 }
 
-/* Decide whether the device at d is the RTC it declares. A first read that
- * fails means nothing is there, and one that is all 0xFF is an erased EEPROM,
- * though a real RTC can power up that way, so it is skipped for now.
- * Otherwise the device is ruled out only when two reads each rule it out: a
- * failed second read does not, an all-0xFF second read does, and an
- * unreadable power-loss flag cannot vouch for the fields. RTC_FOUND leaves
- * the block to decode in blk; RTC_FOUND_GARBLED is this RTC with no clean
- * read to take a time from. */
+/* Decide whether the device at d is the RTC it declares: ruled out only when
+ * two reads each rule it out. RTC_FOUND leaves the block to decode in blk;
+ * RTC_FOUND_GARBLED is this RTC with no clean read to take a time from. */
 static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 {
 	uint8_t again[7];
@@ -230,8 +225,7 @@ static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 }
 
 /* The 7-byte time block for an epoch, in d's register order. False outside
- * 2000-2099: ZephCore writes the year as two BCD digits and no century bit,
- * so any other year would be stored as one inside that range. */
+ * 2000-2099, which a two-digit BCD year with no century bit cannot hold. */
 static bool rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk[7])
 {
 	int y;
@@ -289,19 +283,16 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
 #define RV3028_BACKUP_BSM     0x0C  /* 37h switchover mode; 00 = disabled */
 #define RV3028_YEAR_UNSET     0xA0  /* not BCD; a year of A0h-FEh reads "not set" */
 
-/* Mark the year A0h, then write all seven registers in one access (4.5),
- * year last. The chip keeps each byte as it is acknowledged, so a write cut
- * between the mark and the year byte leaves the mark, and the next boot
- * takes no time from it. */
+/* Mark the year A0h, then write all seven registers in one access (4.5):
+ * a write cut before the year byte leaves the mark. */
 static bool rv3028_write_time(const struct rtc_desc *d, const uint8_t blk[7])
 {
 	return i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, RV3028_YEAR_UNSET) == 0 &&
 	       i2c_burst_write(d->bus, d->addr, d->time_reg, blk, 7) == 0;
 }
 
-/* For a time outside 2000-2099, which is not written: mark the year alone,
- * so the next boot takes no time rather than the older one the chip holds.
- * BSF is cleared before and checked after, as for a time write. */
+/* Mark the year alone, for a time outside 2000-2099, with the same BSF
+ * check as a time write. */
 static bool rv3028_mark_year(const struct rtc_desc *d)
 {
 	uint8_t st;
@@ -407,16 +398,10 @@ static uint8_t rv3028_cfg_backup_ram(const struct rtc_desc *d, uint8_t ram)
 	return ram;
 }
 
-/* Store the descriptor's rv3028-eeprom-config in the chip's EEPROM. The
- * EEPROM is only touched with automatic refresh held off (4.6.7) and backup
- * switchover disabled in RAM (3.15.6: BSM 00 for any EEPROM read or write).
- * Each byte is compared against the EEPROM itself (4.6.6) and written only if
- * it differs (4.6.5). A closing Refresh (4.6.4) reloads RAM from the EEPROM,
- * switching back to the stored BSM, and the config is read back on every run.
- * A triplet outside 35h-37h, masking an unimplemented bit, or repeating a
- * register is ignored, so a devicetree mistake cannot write on every boot.
- * Reports whether the config was confirmed, and if so whether EERD, which
- * also stops the daily refresh, was cleared afterwards. */
+/* Store the descriptor's rv3028-eeprom-config in the chip's EEPROM, writing
+ * only bytes that differ, with refresh and backup switchover held off as the
+ * data sheet requires. Reports whether the config was confirmed, and if so
+ * whether EERD was cleared afterwards. */
 enum rv3028_store { RV3028_STORED, RV3028_EERD_SET, RV3028_NOT_STORED };
 
 static enum rv3028_store rv3028_store_config(const struct rtc_desc *d)
@@ -659,8 +644,7 @@ static bool rtc_probe(uint32_t *epoch_out)
 		uint8_t db = blk[d->date_index] & 0x3F, ob = blk[5] & 0x1F, yb = blk[6];
 
 #if RTC_RV3028_CFG
-		/* A New Year counts a left mark on (A0h to A1h, A9h to B0h). FFh is a
-		 * read cut short. */
+		/* The mark, or a New Year's count on from it; FFh is a cut read. */
 		if (d->cfg != NULL && yb >= RV3028_YEAR_UNSET && yb != 0xFF) {
 			LOG_INF("%s present, time not yet set (year %02Xh)", d->name, yb);
 			continue;
