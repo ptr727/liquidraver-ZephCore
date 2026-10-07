@@ -67,9 +67,9 @@ properties:
     description: >
       [register mask]: a bit outside the time block that reads set in
       12-hour mode, where clearing it makes the chip convert its own
-      hours to 24-hour, such as the RV3028's Control 2 12_24. At boot,
-      once the chip is identified, a set bit is cleared before the time
-      is read, unless the register reads FFh.
+      hours to 24-hour, such as the RV3028's Control 2 12_24. Once the
+      chip is cleanly identified, a set bit is cleared before a time is
+      taken from it, unless the register reads FFh.
 
   rv3028-eeprom-config:
     type: uint8-array
