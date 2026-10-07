@@ -10,8 +10,8 @@
  *
  * If a present chip holds a valid time, zephcore_rtc_restore() returns it so
  * the soft clock can be seeded at boot (shown tagged "L" — local). Every
- * ZephyrRTCClock::setCurrentTime() within 2000-2099 writes it back via
- * zephcore_rtc_save(), so time survives the next power-off.
+ * ZephyrRTCClock::setCurrentTime() writes it back via zephcore_rtc_save(), so
+ * time survives the next power-off.
  */
 
 #pragma once
@@ -31,8 +31,7 @@ extern "C" {
  * present or none holds a trustworthy time.
  *
  * A descriptor with rv3028-eeprom-config also has that config stored in the
- * chip's EEPROM, retried on the system work queue if it fails. There, a year
- * of A0h-FEh gives no time.
+ * chip's EEPROM, retried on the system work queue if it fails.
  */
 bool zephcore_rtc_restore(uint32_t *epoch_out);
 
@@ -41,8 +40,7 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
  * power-loss flag. No-op if no RTC was discovered. Intended for real syncs
  * (GPS/app/CLI), not per-packet clock nudges. Call only from the system work
  * queue: an unconfirmed write is repeated there and shares state with this
- * call. A time outside 2000-2099 is not written; at an rv3028-eeprom-config
- * descriptor the year is marked A0h instead, so the next boot takes no time.
+ * call. A time outside 2000-2099 is not written.
  */
 void zephcore_rtc_save(uint32_t epoch);
 
