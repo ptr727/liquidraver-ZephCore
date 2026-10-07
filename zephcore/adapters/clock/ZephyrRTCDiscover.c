@@ -600,7 +600,7 @@ static bool rtc_probe(uint32_t *epoch_out)
 		if (v == RTC_ABSENT) {
 			continue;
 		}
-		if (rtc_clear_12h(d) && v == RTC_FOUND &&
+		if (v == RTC_FOUND && rtc_clear_12h(d) &&
 		    i2c_burst_read(d->bus, d->addr, d->time_reg, blk, 7) != 0) {
 			v = RTC_FOUND_GARBLED;
 		}
