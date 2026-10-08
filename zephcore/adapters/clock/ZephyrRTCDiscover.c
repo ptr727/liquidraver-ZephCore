@@ -232,16 +232,23 @@ static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 	return RTC_FOUND;
 }
 
-/* Clear a set 12-hour bit; the chip converts its hours itself. Never on an
- * FFh read. True if cleared. */
-static bool rtc_clear_12h(const struct rtc_desc *d)
+/* Clear a set 12-hour bit and re-read blk; the chip converts its hours
+ * itself. False on a failed read, an FFh read or a failed clear. */
+static bool rtc_clear_12h(const struct rtc_desc *d, uint8_t blk[7])
 {
 	uint8_t r;
 
-	if (d->h12_mask == 0 ||
-	    i2c_reg_read_byte(d->bus, d->addr, d->h12_reg, &r) != 0 ||
-	    r == 0xFF || !(r & d->h12_mask) ||
-	    i2c_reg_write_byte(d->bus, d->addr, d->h12_reg, r & ~d->h12_mask) != 0) {
+	if (d->h12_mask == 0) {
+		return true;
+	}
+	if (i2c_reg_read_byte(d->bus, d->addr, d->h12_reg, &r) != 0 || r == 0xFF) {
+		return false;
+	}
+	if (!(r & d->h12_mask)) {
+		return true;
+	}
+	if (i2c_reg_write_byte(d->bus, d->addr, d->h12_reg, r & ~d->h12_mask) != 0 ||
+	    i2c_burst_read(d->bus, d->addr, d->time_reg, blk, 7) != 0) {
 		return false;
 	}
 	LOG_INF("%s: 12-hour mode cleared", d->name);
@@ -608,8 +615,7 @@ static bool rtc_probe(uint32_t *epoch_out)
 		if (v == RTC_ABSENT) {
 			continue;
 		}
-		if (v == RTC_FOUND && rtc_clear_12h(d) &&
-		    i2c_burst_read(d->bus, d->addr, d->time_reg, blk, 7) != 0) {
+		if (v == RTC_FOUND && !rtc_clear_12h(d, blk)) {
 			v = RTC_FOUND_GARBLED;
 		}
 

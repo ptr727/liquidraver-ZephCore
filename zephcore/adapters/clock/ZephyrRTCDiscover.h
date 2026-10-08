@@ -29,7 +29,8 @@ extern "C" {
  * epoch in *epoch_out and return true. The first chip found (valid time or
  * not) is remembered as the write-back target. Returns false if none is
  * present or none holds a trustworthy time. On a clean identification, a set
- * twelve-hour-bit is cleared before the time is taken.
+ * twelve-hour-bit is cleared before the time is taken, and no time is taken
+ * if that bit cannot be read or cleared.
  *
  * A descriptor with rv3028-eeprom-config also has that config stored in the
  * chip's EEPROM, retried on the system work queue if it fails.

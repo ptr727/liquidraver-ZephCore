@@ -69,7 +69,8 @@ properties:
       12-hour mode, where clearing it makes the chip convert its own
       hours to 24-hour, such as the RV3028's Control 2 12_24. Once the
       chip is cleanly identified, a set bit is cleared before a time is
-      taken from it, unless the register reads FFh.
+      taken from it. No time is taken if the register cannot be read,
+      reads FFh, or does not take the clear.
 
   rv3028-eeprom-config:
     type: uint8-array
