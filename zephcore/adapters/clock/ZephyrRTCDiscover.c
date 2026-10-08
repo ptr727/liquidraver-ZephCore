@@ -233,7 +233,8 @@ static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 }
 
 /* Clear a set 12-hour bit and re-read blk; the chip converts its hours
- * itself. False on a failed read, an FFh read or a failed clear. */
+ * itself. False on a failed or FFh read of the bit, or a failed clear or
+ * re-read. */
 static bool rtc_clear_12h(const struct rtc_desc *d, uint8_t blk[7])
 {
 	uint8_t r;
