@@ -47,22 +47,8 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
  */
 void zephcore_rtc_save(uint32_t epoch);
 
-/*
- * ---- Reporting accessors -------------------------------------------------
- *
- * Discovery knows which chips the board declares and which one it adopted, but
- * until now kept both to itself, so a release build could not say what RTC it
- * is driving (every MESH_DEBUG_* call is compiled away). These expose that.
- * The one change to probing: each probe run starts from no adopted chip, so a
- * second run reports its own outcome rather than the first run's, and a run
- * publishes its outcome only when it ends.
- *
- * They report only what discovery actually established. The probe loop stops
- * at the first chip holding a valid time, so candidates after it are never
- * reached -- those report UNPROBED rather than being reported as absent. A
- * candidate whose I2C bus was not ready reports UNPROBED for the same reason:
- * a probe that could not run is not evidence that the chip is missing.
- */
+/* Reporting accessors, for `hw`. Each probe run starts from no outcome and
+ * publishes its states and adopted chip together when it ends. */
 
 enum zephcore_rtc_state {
 	ZEPHCORE_RTC_UNPROBED = 0, /* not probed: discovery stopped before
@@ -84,7 +70,7 @@ struct zephcore_rtc_entry {
 	const char *name;              /* DT node full name, e.g. "rtc-rv3028@52" */
 	const char *bus;               /* I2C bus device name */
 	uint16_t addr;                 /* I2C address */
-	enum zephcore_rtc_state state; /* what the boot probe found */
+	enum zephcore_rtc_state state; /* what the last probe run found */
 	bool active;                   /* adopted as the write-back target */
 };
 
@@ -93,10 +79,7 @@ struct zephcore_rtc_entry {
 size_t zephcore_rtc_declared(void);
 
 /* Copy up to max candidates into out[], in declaration order, and return how
- * many were copied. The states and the adopted marker come from one probe
- * run, even while a re-probe runs on another thread. No entry is active when
- * none was adopted, which includes discovery not having run yet -- check
- * zephcore_rtc_probed(). */
+ * many were copied. States and the adopted marker come from one probe run. */
 size_t zephcore_rtc_snapshot(struct zephcore_rtc_entry *out, size_t max);
 
 /* Has boot-time discovery run? If false, every state above is UNPROBED. */

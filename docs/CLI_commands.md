@@ -61,14 +61,14 @@ commands only from upstream's set, and ZephCore-only commands stay local by desi
 
 | Command | Description |
 |---------|-------------|
-| `hw` | Summary. Emits exactly these fields, one per line: `<board> (<soc>)` — the short board name and SoC, not the full board target — then `fw`/`role`, `rtc` (the chip the boot probe adopted for write-back), `gnss`, `i2c` count, `reset`. `hw N` resumes it |
+| `hw` | Summary. Emits exactly these fields, one per line: `<board> (<soc>)` — the short board name and SoC, not the full board target — then `fw`/`role`, `rtc` (the chip the last probe run adopted for write-back), `gnss`, `i2c` count, `reset`. `hw N` resumes it |
 | `hw board [start]` | `board`, `name`, `soc`, `zephyr`, `fw`, `role`, `bootloader` (when the board can report one), `reset`, `devid` |
-| `hw rtc [start]` | Declared I2C RTC candidates and the boot probe's outcome for each |
+| `hw rtc [start]` | Declared I2C RTC candidates and the last probe run's outcome for each |
 | `hw i2c [start]` | Devicetree-declared I2C inventory. **Not a bus scan** — no bus traffic |
 | `hw i2c scan [start]` | Live scan of 0x08–0x77 on each bus carrying a declared device, naming declared addresses (see the coverage note below) |
-| `hw gps [start]` | GNSS driver compatible, transport, baud, and enable state. A GNSS node, or its UART, disabled in devicetree reports `declared but disabled` (the summary says `disabled`), since the GPS manager does not use it |
-| `hw sensors [start]` | Each sensor the boot probe found, environment and power monitors alike, and the fields a fresh read of it returns. Each one is read on the spot, as for a telemetry request |
-| `hw all [start]` | `board`, `rtc`, `i2c`, `gps` and `sensors`, in that order, so it reads each sensor. Not the summary, and not `hw i2c scan`, which probes every address |
+| `hw gps [start]` | GNSS driver compatible, transport, baud, and enable state. A GNSS node disabled in devicetree reports `declared but disabled` (the summary says `disabled`) |
+| `hw sensors [start]` | Each sensor the boot probe found, environment and power monitors alike, and the fields a fresh read of it returns. Each one on the page being returned is read on the spot, as for a telemetry request |
+| `hw all [start]` | `board`, `rtc`, `i2c`, `gps` and `sensors`, in that order, reading each sensor whose line is on the page. Not the summary, and not `hw i2c scan`, which probes every address |
 | `hw <anything else>` | Usage string |
 
 `start` is an optional line index for resuming a truncated reply (see **Paging** below).
@@ -84,7 +84,8 @@ This is deliberate and the replies say which is which.
 - **`hw i2c`** enumerates what the **devicetree declares**. It costs no bus traffic and
   carries each node's address, bus and compatible for free. It **cannot see a chip the board
   does not declare.**
-- **`hw i2c scan`** probes the wire with a zero-length write to each address. It finds
+- **`hw i2c scan`** probes the wire with a one-byte read of each address, so nothing is written to a
+  device that has not been identified. It finds
   undeclared hardware, but a bare address is all the bus itself reveals; declared addresses
   are annotated with their compatible. Where several nodes share an address (the common
   sensor list puts both the BME280 and the BMP388 at 0x77) every one is listed, `|`-separated,
@@ -123,8 +124,8 @@ Every field is something the firmware *knows*. It never infers:
   an RTC fitted but not declared is invisible to the firmware, and the reply says exactly that.
   A board that declares candidates in a build with RTC autodiscovery disabled reports
   `rtc: N declared, autodiscovery disabled`.
-- An RTC candidate the boot probe never reached, whose I2C bus was not ready, or whose read
-  failed with a timeout or a busy bus, reports `unprobed`, not `absent`. The probe stops at the
+- An RTC candidate the probe never reached, whose I2C bus was not ready, or whose read
+  failed with any error other than `-EIO`, reports `unprobed`, not `absent`. The probe stops at the
   first chip holding a valid time.
 - `absent` means the read ended in `-EIO`, which is how every driver here reports an address
   NACK, or that two reads each showed a device that is not this RTC. On every driver here a
@@ -146,7 +147,7 @@ remote admin, since a remote reply rides the caller's LoRa packet buffer. On a c
 reply is bounded by the app's CLI frame (175 bytes) instead, because the app path cannot be told
 apart from the USB console. Either bound is less any `xx|` prefix the line carried, local or
 remote. When a section does not fit,
-the reply ends with ` next:N` and `hw <section> N` (or `hw N` for the summary) resumes from that
+the reply ends with a line `... next:N`, as `sensor list` does, and `hw <section> N` (or `hw N` for the summary) resumes from that
 line. A single line too long for a whole page, or longer than 159 characters, is cut to fit and ends in `...`, so a resume
 always moves past it. A start index past the last line answers `no line N, the report has M`.
 
