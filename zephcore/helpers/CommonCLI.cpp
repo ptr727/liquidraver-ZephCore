@@ -4,6 +4,10 @@
  */
 
 #include "CommonCLI.h"
+#include "HardwareReport.h"
+#if IS_ENABLED(CONFIG_ZEPHCORE_ROLE_COMPANION)
+#include "../adapters/transport/companion_framing.h"
+#endif
 #include "battery_curve.h"
 #include "led_gate.h"
 #include "buzzer_gate.h"
@@ -68,9 +72,11 @@ static const NodePrefs* cliDefaults() {
 /* ---- leds.radio / leds.hb mode names ----------------------------------- */
 /*
  * Which LEDs this board has, so the CLI can say when a setting it stored
- * does nothing here. Mirrors the aliases the drivers use.
+ * does nothing here. Mirrors the aliases the drivers use: lora-tx-led or
+ * lora-tx-pwm-led, led0 with an led1 fallback.
  */
-#define CLI_HAS_RADIO_LED  DT_NODE_EXISTS(DT_ALIAS(lora_tx_led))
+#define CLI_HAS_RADIO_LED  (DT_NODE_EXISTS(DT_ALIAS(lora_tx_led)) || \
+			     DT_NODE_EXISTS(DT_ALIAS(lora_tx_pwm_led)))
 #define CLI_HAS_HB_LED     (DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios) || \
 			    DT_NODE_HAS_PROP(DT_ALIAS(led1), gpios))
 
@@ -496,6 +502,19 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 		} else {
 			snprintf(reply, CLI_REPLY_SIZE, "File system erase: Err");
 		}
+	} else if (memcmp(command, "hw", 2) == 0 && (command[2] == '\0' || command[2] == ' ')) {
+		/* A companion's local reply may be the app's CLI frame. */
+		size_t cap = replyCap(sender_timestamp);
+#if IS_ENABLED(CONFIG_ZEPHCORE_ROLE_COMPANION)
+		if (cap > MAX_FRAME_SIZE - 1) {
+			cap = MAX_FRAME_SIZE - 1;
+		}
+#endif
+		/* reply already starts past a local request's "xx|" prefix. */
+		if (sender_timestamp == 0) {
+			cap -= _reply_hdr_used;
+		}
+		zephcore_hw::handle(command, reply, cap, _board, _callbacks);
 	} else if (memcmp(command, "ver", 3) == 0) {
 		snprintf(reply, CLI_REPLY_SIZE, "%s (Build: %s)", _callbacks->getFirmwareVer(), _callbacks->getBuildDate());
 	} else if (memcmp(command, "board", 5) == 0) {
@@ -982,8 +1001,8 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, const char* command, cha
 		return;
 	}
 	/* MUST stay above the "leds" branch: that one compares only the first
-	 * four characters, so "leds.radio" and "leds.hb" both match it and
-	 * would otherwise return the master switch instead. */
+	 * four characters, so "leds.radio"/"leds.hb"/"leds.brightness" all
+	 * match it and would otherwise return the master switch instead. */
 	if (memcmp(config, "leds.radio", 10) == 0) {
 		snprintf(reply, CLI_REPLY_SIZE, "> %s%s",
 			 cliModeName(LEDS_RADIO_NAMES, 4, _prefs->leds_radio_mode),
@@ -992,6 +1011,8 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, const char* command, cha
 		snprintf(reply, CLI_REPLY_SIZE, "> %s%s",
 			 cliModeName(LEDS_HB_NAMES, 4, _prefs->leds_hb_mode),
 			 CLI_HAS_HB_LED ? "" : " (no heartbeat LED on this board)");
+	} else if (memcmp(config, "leds.brightness", 15) == 0) {
+		snprintf(reply, CLI_REPLY_SIZE, "> %u%%", (unsigned)_prefs->led_brightness);
 	} else if (memcmp(config, "leds", 4) == 0) {
 		snprintf(reply, CLI_REPLY_SIZE, "> %s", _prefs->leds_disabled ? "off" : "on");
 #ifndef ZEPHCORE_REPEATER
@@ -1263,10 +1284,24 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, const char* command, cha
 			snprintf(reply, CLI_REPLY_SIZE, "OK%s",
 				 CLI_HAS_HB_LED ? "" : " (no heartbeat LED on this board)");
 		}
+	} else if (memcmp(config, "leds.brightness ", 16) == 0) {
+		const char *val = &config[16];
+		char *endptr = (char *)val;
+		long pct = strtol(val, &endptr, 10);
+		bool trailing_pct = (*endptr == '%' && *(endptr + 1) == '\0');
+		if (endptr == val || (*endptr != '\0' && !trailing_pct) ||
+		    pct < 0 || pct > 100) {
+			strcpy(reply, "Error: must be 0-100");
+		} else {
+			_prefs->led_brightness = (uint8_t)pct;
+			zephcore_led_set_brightness_pct((uint8_t)pct);
+			savePrefs();
+			snprintf(reply, CLI_REPLY_SIZE, "OK - leds.brightness=%ld%%", pct);
+		}
 	} else if (memcmp(config, "leds ", 5) == 0) {
 		/* Master switch for every LED on the node: heartbeat, unread-message
 		 * and LoRa TX activity, plus the message and shutdown flashes. Not
-		 * the display backlight — that has its own UI brightness setting. */
+		 * the display backlight (that has its own UI brightness setting). */
 		int on = cliOnOff(&config[5], cliDefaults()->leds_disabled ? 0 : 1);
 		if (on < 0) {
 			strcpy(reply, "Error: must be on, off or default");

@@ -45,7 +45,118 @@ The text CLI of every ZephCore role. Commands are sent over USB serial (CDC-ACM)
 | `start ota` | ESP32: start WiFi AP + HTTP OTA server. nRF52: reboot into BLE OTA DFU mode |
 | `stop ota` | *(ZephCore only)* Stop WiFi OTA server (ESP32 only) |
 | `clkreboot` | Set clock to a fixed reference time (15 May 2024 8:50pm UTC) then reboot. On a board with a hardware RTC the reference time is written to the chip too, as upstream, so the reset survives the reboot |
-| `powersaving` / `powersaving on` / `powersaving off` | Upstream's command and replies. On ESP32 light-sleep repeaters (boards with `light_sleep: true`) it gates light sleep: `off` (persisted) keeps the SoC awake, which also keeps a USB Serial/JTAG console attached; `on` allows sleep again, replying `on - After N s (console window)` while the console window is open, else `on - Immediate effect`. Default **on** on those builds, and prefs from firmware that stored the field without acting on it are read as on once. nRF52/nRF54L: stored, replies `on - Immediate effect` (they always idle in System ON; `off` changes nothing). Other boards: `Board not supported` |
+| `powersaving` / `powersaving on` / `powersaving off` | Upstream's command and replies. On ESP32 light-sleep builds (repeaters of boards with `light_sleep: true`, companions of boards with `light_sleep_companion: true`) it gates light sleep: `off` (persisted) keeps the SoC awake, which also keeps a USB Serial/JTAG console attached; `on` allows sleep again, replying `on - After N s (console window)` while the console window is open, else `on - Immediate effect`. Default **on** on those repeaters, and prefs from firmware that stored the field without acting on it are read as on once. Default **off** on companions: a companion sleeps only after `powersaving on`, and then not while a USB host is attached, the display is on, or a Bluetooth link is not yet encrypted. nRF52/nRF54L: stored, replies `on - Immediate effect` (they always idle in System ON; `off` changes nothing). Other boards: `Board not supported` |
+
+---
+
+## Hardware Report *(ZephCore only)*
+
+`hw` reports what the firmware is and what hardware it actually found. A release build
+compiles every `MESH_DEBUG_*` call away, so this is the only way to get these facts off a
+stock node. Implemented in `helpers/HardwareReport.cpp` and dispatched from `CommonCLI`, so
+it is available on the **three roles that route through it** — companion, repeater and room
+server. The observer has a CLI of its own and does not offer `hw`. On a companion `hw` is local
+only (USB, the app's CLI command and the V-Contact chat): the companion forwards remote admin
+commands only from upstream's set, and ZephCore-only commands stay local by design.
+
+| Command | Description |
+|---------|-------------|
+| `hw` | Summary. Emits exactly these fields, one per line: `<board> (<soc>)` — the short board name and SoC, not the full board target — then `fw`/`role`, `rtc` (the chip the last probe run adopted for write-back), `gnss`, `i2c` count, `reset`. `hw N` resumes it |
+| `hw board [start]` | `board`, `name`, `soc`, `zephyr`, `fw`, `role`, `bootloader` (when the board can report one), `reset`, `devid` |
+| `hw rtc [start]` | Declared I2C RTC candidates and the last probe run's outcome for each |
+| `hw i2c [start]` | Devicetree-declared I2C inventory. **Not a bus scan** — no bus traffic |
+| `hw i2c scan [start]` | Live scan of 0x08–0x77 on each bus carrying a declared device, naming declared addresses (see the coverage note below) |
+| `hw gps [start]` | GNSS driver compatible, transport, baud, and enable state. A GNSS node disabled in devicetree reports `declared but disabled` (the summary says `disabled`) |
+| `hw sensors [start]` | Each sensor the boot probe found, environment and power monitors alike, and the fields a fresh read of it returns. Each one on the page being returned is read on the spot, as for a telemetry request |
+| `hw all [start]` | `board`, `rtc`, `i2c`, `gps` and `sensors`, in that order, reading each sensor whose line is on the page. Not the summary, and not `hw i2c scan`, which probes every address |
+| `hw <anything else>` | Usage string |
+
+`start` is an optional line index for resuming a truncated reply (see **Paging** below).
+
+**Radio parameters are not reported here.** `get freq`, `get sf`, `get bw`, `get tx` and the
+`stats-radio` family already cover them. Duplicating a live setting in a second place is how the
+two drift apart.
+
+### `hw i2c` and `hw i2c scan` answer different questions
+
+This is deliberate and the replies say which is which.
+
+- **`hw i2c`** enumerates what the **devicetree declares**. It costs no bus traffic and
+  carries each node's address, bus and compatible for free. It **cannot see a chip the board
+  does not declare.**
+- **`hw i2c scan`** probes the wire with a one-byte read of each address, so nothing is written to a
+  device that has not been identified. It finds
+  undeclared hardware, but a bare address is all the bus itself reveals; declared addresses
+  are annotated with their compatible. Where several nodes share an address (the common
+  sensor list puts both the BME280 and the BMP388 at 0x77) every one is listed, `|`-separated,
+  since a scan cannot tell which part answered. A probe that times out or finds the bus busy stops
+  that bus's scan with `bus not responding at 0xNN (err N), scan stopped`, so a dead or held
+  bus cannot keep the CLI waiting through every address.
+
+A scan and a devicetree enumeration are not the same fact. Reporting one as the other is how
+a tool ends up stating something nobody established.
+
+**Coverage.** Neither is tied to a bus nodelabel: both are built by walking the whole
+devicetree, so a device on `i2c22` or `i2c30` is covered exactly like one on `i2c0`. The tree
+does have boards on those labels.
+
+What each covers, precisely:
+
+- `hw i2c` lists **every declared I2C device**, on any bus.
+- `hw i2c scan` probes **each bus that carries at least one declared device**.
+
+So one gap exists and is worth knowing: an enabled bus with **no declared device at all** is
+never scanned, because the set of buses is derived from the declared devices. In practice a
+bus is enabled because something is on it, but a board that enables a bus purely for an
+undeclared or hot-plugged chip would not see it probed.
+
+### What the report will not do
+
+Every field is something the firmware *knows*. It never infers:
+
+- The GNSS model is reported as the **bound driver's** compatible. A board overlay comment
+  naming a part is documentation, not detection — `rak4631` documents a u-blox MAX-7Q while
+  binding `gnss-nmea-generic`, which happily drives whatever NMEA receiver is fitted, so the
+  reply says `model: not identified (generic NMEA driver)` rather than repeating the comment.
+- A board that declares no RTC reports `rtc: none declared in devicetree`, **not** "no RTC".
+  `boards/common/rtc-i2c.dtsi` is opt-in per board, because its fixed addresses (0x68, 0x51,
+  0x52, 0x32) collide with common parts — an IMU sits at 0x68, same as a DS3231. A board with
+  an RTC fitted but not declared is invisible to the firmware, and the reply says exactly that.
+  A board that declares candidates in a build with RTC autodiscovery disabled reports
+  `rtc: N declared, autodiscovery disabled`.
+- An RTC candidate the probe never reached, whose I2C bus was not ready, or whose read
+  failed with any error other than `-EIO`, reports `unprobed`, not `absent`. The probe stops at the
+  first chip holding a valid time.
+- `absent` means the read ended in `-EIO`, which is how every driver here reports an address
+  NACK, or that two reads each showed a device that is not this RTC. On every driver here a
+  data NACK is also `-EIO`, and the nRF drivers report any other bus error event the same way,
+  so such a failure reads as `absent` too; the drivers give nothing finer. `present` means the
+  probe identified the chip as this RTC, which includes a chip whose time could not be read.
+  The first chip identified is adopted for write-back (marked `*`).
+- `all 0xff` means the first read returned 0xFF in every byte: an erased EEPROM, or an RTC
+  that has not started. The probe skips it. If no RTC was adopted, the first time save
+  probes once more, which can settle it. Like
+  `unprobed`, it keeps the summary at `none found, N unsettled` rather than `none present`.
+- A build with no sensor support reports `not compiled in`, which is a different statement
+  from a sensor manager that looked and found nothing.
+
+### Paging
+
+A reply is bounded by `CLI_REPLY_SIZE` (256) locally and by `CLI_REMOTE_REPLY_SIZE` (161) over
+remote admin, since a remote reply rides the caller's LoRa packet buffer. On a companion a local
+reply is bounded by the app's CLI frame (175 bytes) instead, because the app path cannot be told
+apart from the USB console. Either bound is less any `xx|` prefix the line carried, local or
+remote. When a section does not fit,
+the reply ends with a line `... next:N`, as `sensor list` does, and `hw <section> N` (or `hw N` for the summary) resumes from that
+line. A single line too long for a whole page, or longer than 159 characters, is cut to fit and ends in `...`, so a resume
+always moves past it. A start index past the last line answers `no line N, the report has M`.
+
+Each page is computed afresh, so a resumed `hw i2c scan` re-scans the bus. If a chip appears or
+disappears between pages, the line numbering can move and a resumed page may skip or repeat a
+line.
+
+Room is reserved for the marker before the buffer fills, so the resume index is never itself
+truncated — a page that cannot say where to resume is unresumable.
 
 ---
 
@@ -292,11 +403,13 @@ Companion builds only. Local only: they run from USB and the app's CLI, and a re
 
 ## Observer (ZephCore only)
 
-The observer role (ESP32, `boards/common/observer.conf`) has its own CLI and none of the commands in the other sections: no `reboot`, `ver`, `erase`, `set radio` or `set tx`. USB serial only — an observer never transmits, so there is no remote admin. A `get` replies with the bare value, without the `> ` prefix; a `set` echoes `key=value`; errors start with `ERR`. Every `set` is saved and applied at once, with no reboot.
+The observer role (ESP32, `boards/common/observer.conf`) has its own CLI and, apart from `reboot` and `erase`, none of the commands in the other sections: no `ver`, `set radio` or `set tx`. USB serial only — an observer never transmits, so there is no remote admin. A `get` replies with the bare value, without the `> ` prefix; a `set` echoes `key=value`; errors start with `ERR`. Every `set` is saved and applied at once, with no reboot.
 
 | Command | Description |
 |---------|-------------|
 | `help` | Status banner (node, key, radio, WiFi and MQTT state) followed by the command list. Also printed at boot |
+| `reboot` | Restart the node. Replies `OK - rebooting`, as on a repeater |
+| `erase` | Factory reset, as on a repeater: erases the whole LittleFS volume (identity, name, radio, WiFi and MQTT settings) and restarts onto defaults. Replies `File system erase: OK - rebooting` |
 | `get role` | `observer` |
 | `get name` | Node name. Default `Observer-XXXXXXXX` |
 | `get board` | Board name |
@@ -358,8 +471,9 @@ The observer role (ESP32, `boards/common/observer.conf`) has its own CLI and non
 | `get owner.info` | Owner/contact info (pipes `\|` display as newlines) |
 | `get int.thresh` | Interference threshold |
 | `get leds` | *(ZephCore only)* LED master switch: `on` or `off` |
-| `get leds.radio` | *(ZephCore only)* Activity-LED mode: `tx`, `rx`, `all` or `off`. Appends `(no radio LED on this board)` where the board has no `lora-tx-led` alias |
+| `get leds.radio` | *(ZephCore only)* Activity-LED mode: `tx`, `rx`, `all` or `off`. Appends `(no radio LED on this board)` where the board has neither a `lora-tx-led` nor a `lora-tx-pwm-led` alias |
 | `get leds.hb` | *(ZephCore only)* Heartbeat-LED mode: `all`, `hb`, `unread` or `off`. Appends `(no heartbeat LED on this board)` where the board has neither `led0` nor `led1` |
+| `get leds.brightness` | *(ZephCore only)* Brightness of a PWM-capable heartbeat/activity LED, `0` to `100` as a percentage. Boards without a `heartbeat-pwm-led` / `lora-tx-pwm-led` alias still report a value (nothing reads it) |
 | `get buzzer` | *(ZephCore only; room server only)* Buzzer/vibration mode as `<n> (<name>)`: `0 (silent)`, `1 (sound+vib)`, `2 (vibrate)`, `3 (sound)`. Compiled out on repeater builds (`#ifndef ZEPHCORE_REPEATER`) — a repeater answers `unknown config: buzzer`. |
 | `get agc.reset.interval` | Removed — replies `Removed - Automatic AGC reset is on`. Periodic AGC recalibration was deleted (it reset the noise floor to its unseeded sentinel on every fire). Use `set rxduty` to cut RX current. |
 | `get multi.acks` | Extra ACK transmit count (`0` or `1`) |
@@ -387,7 +501,7 @@ The observer role (ESP32, `boards/common/observer.conf`) has its own CLI and non
 | `get extra.sf` | LR2021 side detectors: the extra spreading factors currently received alongside `sf`, comma-separated (bare, no `> ` prefix), or `No extra SF configured`. Reflects the saved prefs, not what the chip accepted — if the set became invalid after an `sf`/`bw` change it is reported here but was refused at boot (a `WRN` line says so). |
 | `get adc.multiplier` | Battery voltage ADC calibration multiplier |
 | `get bootloader.ver` | Bootloader version string |
-| `get pm` | *(ZephCore only)* ESP32 light-sleep builds: `> on asleep P% sleeps S/E wake tT gG oO radioR btnB [win Ns]` (`off` when powersaving is off): powersaving state, share of uptime asleep, sleeps taken out of light-sleep entries, wake causes (RTC timer, GPIO, other), sleeps that ended with the radio IRQ / user button active, and the console window left. Radio wakes should track the packets the node hears. Other builds: `Error: no light sleep on this build` |
+| `get pm` | *(ZephCore only)* ESP32 light-sleep builds: `> on asleep P% sleeps S/E wake tT gG wW oO radioR btnB [win Ns]` (`off` when powersaving is off): powersaving state, share of uptime asleep, sleeps taken out of light-sleep entries, wake causes (RTC timer, GPIO, WiFi, other), sleeps that ended with the radio IRQ / user button active, and the console window left. Radio wakes should track the packets the node hears. WiFi wakes are the beacons an associated station (the uplink) wakes for: about ten a second on most access points, none without the uplink. Other builds: `Error: no light sleep on this build` |
 | `get pwrmgt.support` | `> supported` on nRF52 (VBUS detection, boot voltage), else `> unsupported` — upstream's reply |
 | `get pwrmgt.source` | nRF52: `> external` (VBUS present) or `> battery`; elsewhere `ERROR: Power management not supported` |
 | `get pwrmgt.bootreason` | `> Reset: <cause>; Shutdown: <reason>`. The cause is this boot's hardware reset cause as labels (`PIN`, `SOFTWARE`, `BROWNOUT`, `POR`, `WATCHDOG`, `LOWPOWER` for a wake from System OFF, ...), followed by `(crash <K_ERR> in <thread>, pc 0x...)` when the previous run ended in a fatal error and rebooted — resolve the pc with `addr2line` against the same build. The shutdown reason is `User Request`, `Low Voltage` or `None` |
@@ -441,8 +555,9 @@ four radio parameters together, since they are one interop-critical set.
 | `set int.thresh <value>` | | Interference detection threshold |
 | `set buzzer <0\|1\|2\|3>` | or `off` / `on` / `vibrate` / `sound` | *(ZephCore only; room server only)* `0`/`off` silent, `1`/`on` sound + vibration, `2`/`vibrate` vibration only, `3`/`sound` sound only. Modes 2 and 3 need a vibration motor; without one the node replies `Error: no vibration motor on this board - use 0 or 1`. Applied live and persisted. Compiled out on repeater builds. |
 | `set leds <on\|off\|1\|0>` | default **on** | *(ZephCore only)* Master switch for every LED on the node, applied live and persisted: heartbeat, unread-message and LoRa TX-activity LEDs, plus the message and shutdown flashes. Works on every role, including headless repeaters where the TX LED is the only one that ever lights. Does **not** cover the display backlight, which is a separate UI brightness setting. |
-| `set leds.radio <tx\|rx\|all\|off>` | default **tx** | *(ZephCore only)* What the LoRa activity LED reacts to, applied live and persisted. `tx` lights it for the duration of each transmit (the behaviour before this setting existed), `rx` gives a 30 ms blink per valid packet received, `all` does both, `off` keeps it dark. Sits **below** `set leds` — the master switch off keeps it dark whatever this says. Only boards defining the `lora-tx-led` alias have this LED; elsewhere the value is stored but does nothing, and the reply says so. |
+| `set leds.radio <tx\|rx\|all\|off>` | default **tx** | *(ZephCore only)* What the LoRa activity LED reacts to, applied live and persisted. `tx` lights it for the duration of each transmit (the behaviour before this setting existed), `rx` gives a 30 ms blink per valid packet received, `all` does both, `off` keeps it dark. Sits **below** `set leds`: the master switch off keeps it dark whatever this says. Only boards defining a `lora-tx-led` or `lora-tx-pwm-led` alias have this LED; elsewhere the value is stored but does nothing, and the reply says so. |
 | `set leds.hb <hb\|unread\|all\|off>` | default **all** | *(ZephCore only)* What the heartbeat LED reacts to, applied live and persisted. `all` is the 4 s liveness tick that widens from 20 ms to 200 ms while messages are unread (the behaviour before this setting existed), `hb` never widens, `unread` stays dark until there are unread messages, `off` keeps it dark. Also sits below `set leds`. See the LED-topology notes below for what this does on single-LED boards. |
+| `set leds.brightness <0-100>` | default **100** | *(ZephCore only)* Brightness of a PWM-capable heartbeat/activity LED, applied live and persisted, `%` suffix accepted. Only boards defining a `heartbeat-pwm-led` or `lora-tx-pwm-led` alias have a dimmable LED; elsewhere the value is stored but has no effect. Also sits below `set leds`. |
 | `set agc.reset.interval <ms>` | Accepted, ignored | Removed — replies `Removed - Automatic AGC reset is on`. The prefs byte is still read and written so the on-flash layout stays byte-exact, but nothing acts on it. |
 | `set multi.acks <0\|1>` | | Enable extra ACK transmits |
 | `set path.hash.mode <mode>` | 0, 1, or 2 | Path hashing algorithm |
@@ -477,9 +592,9 @@ four radio parameters together, since they are one interop-critical set.
 
 ## Notes
 
-- **LED topology differs by board, and it changes what `leds.radio` / `leds.hb` can do.** Two DT aliases
-  decide it: `lora-tx-led` drives the radio activity LED, and `led0` (falling back to `led1`) drives the
-  heartbeat. Of the 35 boards in tree:
+- **LED topology differs by board, and it changes what `leds.radio` / `leds.hb` can do.** DT aliases
+  decide it: `lora-tx-led` or `lora-tx-pwm-led` drives the radio activity LED, and `led0` (falling back
+  to `led1`) drives the heartbeat. Of the 35 boards in tree:
   - **Separate pins (6)** — `rak4631`, `sensecap_solar`, `thinknode_m1`, `thinknode_m6`, `lilygo_techo`,
     `xiao_nrf52840`. Both settings are fully independent. `xiao_nrf52840` has three LEDs: blue heartbeat,
     green unread, red radio.
@@ -487,8 +602,17 @@ four radio parameters together, since they are one interop-critical set.
     `gat562_30s`, `rak3401_1watt`, `rak_wismesh_tag`, `lilygo_timpulse_plus`. Here `lora-tx-led` **is** the
     heartbeat pin, so both settings drive one LED. Radio activity takes priority and the heartbeat yields
     while the radio holds the pin, so a transmit is never blanked mid-packet by the heartbeat's off-timer
-    (and vice versa). Use `set leds.hb off` for an unambiguous radio indicator.
-  - **No radio LED (20)** — including `wio_tracker_l1`, `t1000_e`, `meshtracker_x1`, Heltec V3/V4/V43 and
+    (and vice versa). Use `set leds.hb off` for an unambiguous radio indicator. `heltec_t096` and
+    `heltec_wireless_tracker_v2` also alias the same LED to `heartbeat-pwm-led`/`lora-tx-pwm-led`, so it is
+    dimmable with `leds.brightness`.
+  - **One shared PWM-only pin (1)**: `heltec_wifi_lora32_v43` has no plain `lora-tx-led`, only
+    `lora-tx-pwm-led` aliased to the same PWM LED as the heartbeat: a radio LED that exists only through
+    the PWM path, dimmable with `leds.brightness` like the boards above. On ESP32, a board in either PWM
+    category must not configure that pin as plain GPIO in `main()`, or the GPIO matrix takes the pin back
+    from the LEDC peripheral and the PWM output goes dark; `src/server_main_common.cpp` and
+    `app/main_observer.cpp` skip it automatically (`CONFIG_ZEPHCORE_LED_PWM`) whenever a PWM LED alias
+    is present.
+  - **No radio LED (19)**: including `wio_tracker_l1`, `t1000_e`, `meshtracker_x1`, Heltec V3/V4 and
     both ProMicros. `set leds.radio` is accepted and stored (so the setting survives onto a board that does
     have the LED) but does nothing; the reply says `(no radio LED on this board)`.
   - **No heartbeat LED (1)** — `lilygo_t3s3` has `lora-tx-led` but neither `led0` nor `led1`, so `set leds.hb`

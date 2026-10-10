@@ -142,6 +142,7 @@ Only `lora0` is required. Everything else enables its feature by being present.
 | `lfs_partition` + `filesystem.dtsi` | `/lfs`: identity, prefs, contacts, channels |
 | chosen `zephyr,settings-partition` | NVS for BLE bonds (nRF52, ESP32). nRF54L and MG24 keep bonds in a file on `/lfs` |
 | aliases `led0`, `led1`, `lora-tx-led` | Heartbeat, unread, TX blink |
+| aliases `heartbeat-pwm-led`, `lora-tx-pwm-led` | Same heartbeat/TX blink, brightness-adjustable (`leds.brightness`). Point both at one `pwm-leds` node to share a single physical LED. On ESP32, leave `led0`/`led1` out of the board's `main()` GPIO setup when either alias is present: configuring the same pin as plain GPIO after the PWM driver has claimed it takes the pin back from the LEDC peripheral (`CONFIG_ZEPHCORE_LED_PWM` follows the aliases: it selects `CONFIG_PWM` and makes `src/server_main_common.cpp` and `app/main_observer.cpp` skip this for you) |
 | alias `sw0` | User button; wake source from nRF System OFF and ESP32 light sleep |
 | chosen `zephyr,display` | Display UI |
 | node labelled `buzzer` + alias `buzzer` | PWM buzzer |
@@ -206,7 +207,10 @@ Only `lora0` is required. Everything else enables its feature by being present.
 - **Manifest capabilities:** `wifi: true` gives the companion a WiFi transport and belongs only on boards with
   the RAM for WiFi and BLE together ([ADR 0009](../../../docs/adr/0009-wifi-companion-boards.md)).
   `light_sleep: true` makes repeaters light-sleep; the requirements are in `boards/common/pm_esp32.conf`, and
-  it is declared only after it was validated on the hardware. Either way, give NSS, RESET and every MCU-driven
+  it is declared only after it was validated on the hardware. `light_sleep_companion: true` gives the companion
+  build light sleep (off until the user sends `powersaving on`); it needs the same pin holds and wake pins and
+  about 4 KB of free DRAM, which a WiFi + BLE companion without PSRAM pays for in contacts. Being opt-in, it may
+  be declared before `light_sleep`. Either way, give NSS, RESET and every MCU-driven
   RF switch or FEM line `ESP32_GPIO_SLEEP_HOLD_EN` from the start.
 - **RAM, not flash, limits the companion.** Boards without PSRAM lower `MAX_CONTACTS`; the classic ESP32 also
   trims channels and the offline queue.
