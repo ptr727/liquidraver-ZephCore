@@ -44,7 +44,8 @@ LOG_MODULE_REGISTER(zephcore_observer_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
 /* ========== LED (optional) ========== */
 
-#if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios)
+/* With a PWM LED, led0 is the same pin and belongs to the PWM driver. */
+#if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios) && !IS_ENABLED(CONFIG_ZEPHCORE_LED_PWM)
 #include <zephyr/drivers/gpio.h>
 #define LED0_NODE DT_ALIAS(led0)
 static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
@@ -206,6 +207,10 @@ static void print_banner(void)
 	cli_println("get mqtt.user              MQTT username");
 	cli_println("get mqtt.iata              Location code");
 	cli_println("get meshtimesync           Time-sync consensus state (dry-run)");
+	cli_println("");
+	cli_println("--- System ---");
+	cli_println("reboot                     Restart the node");
+	cli_println("erase                      Factory reset: erase all settings, then restart");
 	cli_println("help                       Show this screen");
 	cli_println("=========================");
 }
@@ -238,6 +243,10 @@ static void cli_echo_resume(void)
 static inline void cli_echo_resume(void) {}
 #endif
 
+/* `reboot` and `erase`: handled here, beside the board and the data store,
+ * not in ObserverMesh. Defined below the global instances. */
+static bool cli_system_command(const char *line, char *reply, size_t reply_size);
+
 static void process_cli_rx(void)
 {
 	uint8_t byte;
@@ -249,7 +258,9 @@ static void process_cli_rx(void)
 
 				cli_reply[0] = '\0';
 				bool want_banner = false;
-				if (s_mesh_ptr) {
+				if (cli_system_command(cli_line, cli_reply, sizeof(cli_reply))) {
+					/* reply set; the node resets shortly */
+				} else if (s_mesh_ptr) {
 					want_banner = s_mesh_ptr->handleCLI(
 						cli_line, cli_reply,
 						sizeof(cli_reply));
@@ -311,6 +322,39 @@ static mesh::LoRaRadio lora_radio(lora_dev, s_board);
 static mesh::ObserverMesh observer_mesh(lora_radio, s_ms_clock, s_rtc_clock);
 static RepeaterDataStore  data_store;
 
+/* ========== reboot / erase ========== */
+
+/* Deferred so the reply reaches the console before the reset. */
+static void cli_reboot_work_fn(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	s_board.reboot();
+}
+
+static K_WORK_DELAYABLE_DEFINE(cli_reboot_work, cli_reboot_work_fn);
+
+/* Same commands and replies as the repeater's CLI (helpers/CommonCLI.cpp).
+ * `erase` is the factory reset: the whole volume, WiFi and MQTT settings
+ * included, then a reboot onto defaults. */
+static bool cli_system_command(const char *line, char *reply, size_t reply_size)
+{
+	if (strcmp(line, "reboot") == 0) {
+		snprintf(reply, reply_size, "OK - rebooting");
+		k_work_schedule(&cli_reboot_work, K_MSEC(500));
+		return true;
+	}
+	if (strcmp(line, "erase") == 0) {
+		if (data_store.formatFileSystem()) {
+			snprintf(reply, reply_size, "File system erase: OK - rebooting");
+			k_work_schedule(&cli_reboot_work, K_MSEC(500));
+		} else {
+			snprintf(reply, reply_size, "File system erase: Err");
+		}
+		return true;
+	}
+	return false;
+}
+
 /* ========== main() ========== */
 
 int main(void)
@@ -320,23 +364,14 @@ int main(void)
 	LOG_INF("=== ZephCore Observer starting ===");
 
 	/* Configure LED */
-#if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios)
+#if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios) && !IS_ENABLED(CONFIG_ZEPHCORE_LED_PWM)
 	if (gpio_is_ready_dt(&led0)) {
 		gpio_pin_configure_dt(&led0, GPIO_OUTPUT_INACTIVE);
 	}
 #endif
 
-	/* First boot on a volume that is not this role's - a fresh chip, a
-	 * companion, or a node that was running Arduino MeshCore, whose nRF52
-	 * filesystems overlap our lfs_partition
-	 * (devdocs/HANDOVER_lfs_arduino_overlap.md).  Erase everything so we
-	 * start from a known state: Zephyr's automount only
-	 * auto-formats the LittleFS volume when it fails to mount, and never
-	 * touches storage_partition (BLE bonds NVS) or QSPI.
-	 *
-	 * Self-limiting, so it needs no "done" marker: the identity is generated
-	 * and saved a few lines below, and loadPrefs() persists defaults on the
-	 * same boot, so the next boot sees this role's data and skips this. */
+	/* First boot on a volume that is not this role's: erase everything (LittleFS,
+	 * bond NVS, QSPI). Self-limiting: this boot writes the role's data. */
 	if (!data_store.hasRoleData()) {
 		LOG_WRN("Volume holds no data for this role - formatting before first boot");
 		if (!zephcore_fs_format_all(nullptr)) {
@@ -360,19 +395,8 @@ int main(void)
 	/* LoRa RX callback — observer never needs TX done */
 	lora_radio.setRxCallback(lora_rx_callback, nullptr);
 
-	/* Bind the radio to the mesh's NodePrefs BEFORE begin().
-	 *
-	 * The radio reads freq/bw/sf/cr through this pointer, both during
-	 * begin() → Dispatcher::begin() → Radio::begin() and on every later
-	 * reconfigure().  Bound to a placeholder that was never loaded from
-	 * flash, the radio stayed on the compiled-in defaults forever: `set freq/sf/bw/cr` wrote flash and
-	 * updated the CLI/MQTT readback but never reached the hardware, so the
-	 * setting looked accepted and then "reverted" on reboot.
-	 *
-	 * Binding before begin() is safe and required: begin() calls loadPrefs()
-	 * first and Dispatcher::begin() last, so the object is populated by the
-	 * time the radio reads through it.  Mirrors main_repeater.cpp and
-	 * main_room_server.cpp. */
+	/* Bind the radio to the mesh's NodePrefs before begin(): the radio reads
+	 * freq/bw/sf/cr through this pointer at begin() and on every reconfigure. */
 	lora_radio.setPrefs(observer_mesh.getNodePrefs());
 
 	/* Initialize and start mesh (loads prefs + identity from flash) */
@@ -422,7 +446,8 @@ int main(void)
 	print_banner();
 
 	/* Start WiFi (non-blocking — MQTT thread waits for WIFI_READY_BIT) */
-	zc_wifi_station_start(s_creds.wifi_ssid, s_creds.wifi_psk, time_sync_cb);
+	zc_wifi_station_start(s_creds.wifi_ssid, s_creds.wifi_psk, time_sync_cb,
+			      true /* WiFi power save */);
 
 	/* Start MQTT publisher thread */
 	char client_id[64];
