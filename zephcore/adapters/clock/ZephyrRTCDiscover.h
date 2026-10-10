@@ -17,6 +17,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -28,7 +29,9 @@ extern "C" {
  * sane time (year >= 2025 and its power-loss flag clear): store its Unix
  * epoch in *epoch_out and return true. The first chip found (valid time or
  * not) is remembered as the write-back target. Returns false if none is
- * present or none holds a trustworthy time.
+ * present or none holds a trustworthy time. On a clean identification, a set
+ * twelve-hour-bit is cleared before the time is taken. No time is taken if its
+ * register cannot be read or reads FFh, or if the clear or the re-read fails.
  *
  * A descriptor with rv3028-eeprom-config also has that config stored in the
  * chip's EEPROM, retried on the system work queue if it fails.
@@ -43,6 +46,44 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
  * call. A time outside 2000-2099 is not written.
  */
 void zephcore_rtc_save(uint32_t epoch);
+
+/* Reporting accessors, for `hw`. Each probe run starts from no outcome and
+ * publishes its states and adopted chip together when it ends. */
+
+enum zephcore_rtc_state {
+	ZEPHCORE_RTC_UNPROBED = 0, /* not probed: discovery stopped before
+				    * reaching it, its bus was not ready, or
+				    * the read failed other than with -EIO */
+	ZEPHCORE_RTC_ABSENT,       /* the read ended in -EIO (no ACK; on nRF
+				    * also any bus error), or two reads each
+				    * showed a device that is not this RTC */
+	ZEPHCORE_RTC_PRESENT,      /* identified as this RTC, including one
+				    * whose time could not be read */
+	ZEPHCORE_RTC_ALL_FF,       /* the first read was all 0xFF: an erased
+				    * EEPROM, or an RTC that has not started.
+				    * Skipped; if no chip was adopted, the
+				    * first save probes again */
+};
+
+/* A devicetree-declared "zephcore,rtc-i2c" candidate, plus its probe outcome. */
+struct zephcore_rtc_entry {
+	const char *name;              /* DT node full name, e.g. "rtc-rv3028@52" */
+	const char *bus;               /* I2C bus device name */
+	uint16_t addr;                 /* I2C address */
+	enum zephcore_rtc_state state; /* what the last probe run found */
+	bool active;                   /* adopted as the write-back target */
+};
+
+/* Number of RTC candidates discovery knows of: those the board declares in
+ * devicetree, or 0 when there are none or autodiscovery is compiled out. */
+size_t zephcore_rtc_declared(void);
+
+/* Copy up to max candidates into out[], in declaration order, and return how
+ * many were copied. States and the adopted marker come from one probe run. */
+size_t zephcore_rtc_snapshot(struct zephcore_rtc_entry *out, size_t max);
+
+/* Has boot-time discovery run? If false, every state above is UNPROBED. */
+bool zephcore_rtc_probed(void);
 
 #ifdef __cplusplus
 }

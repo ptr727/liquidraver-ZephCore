@@ -72,7 +72,8 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 #endif
 
 /* LED configuration */
-#if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios)
+/* With a PWM LED, led0 is the same pin and belongs to the PWM driver. */
+#if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios) && !IS_ENABLED(CONFIG_ZEPHCORE_LED_PWM)
 #define LED0_NODE DT_ALIAS(led0)
 static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 #endif
@@ -610,7 +611,7 @@ int server_main(const ServerRole &role)
 #endif
 
 	/* Configure LEDs */
-#if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios)
+#if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios) && !IS_ENABLED(CONFIG_ZEPHCORE_LED_PWM)
 	if (gpio_is_ready_dt(&led0)) {
 		gpio_pin_configure_dt(&led0, GPIO_OUTPUT_INACTIVE);
 	}

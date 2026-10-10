@@ -600,7 +600,7 @@ Handles the binary BLE protocol with ~50 command opcodes. Key features:
 - **ACK tracking**: 8-slot table, computes expected ACK = SHA256(secret + hash)[0:4]
 - **Contact iteration**: Streaming protocol with `lastmod` filtering for incremental sync. The dump advances only
   while a client is connected and every connected transport has room; it is cancelled when the last client leaves
-- **Lazy write batching**: Dirty contacts/channels flush after 5-second delay
+- **Lazy write batching**: dirty contacts and channels are written 5 s after the last change, so a burst (a contacts import) is written once; a contact change that only refreshes liveness waits up to an hour (`LAZY_WRITE_LIVENESS_MS`)
 - **Protocol versioning**: V2/V3 frame format negotiation with phone app
 - **Ed25519 signing**: 3-phase flow (start→data→finish) for signing up to 8KB
 - **Flood scope**: Transport key filtering for region-scoped sends
@@ -738,6 +738,7 @@ Listen-only node (ESP32 only): receives LoRa packets and publishes them to an MQ
 ### 6.6 CommonCLI Commands
 
 System: `ver`, `board`, `reboot`, `start dfu`, `start ota`, `erase`
+Hardware: `hw`, `hw board/rtc/i2c [scan]/gps/sensors/all` — see `CLI_commands.md`
 Config: `set name/freq/radio/tx/flood.max/password/...`, corresponding getters
 System (power): `poweroff`/`shutdown`, `get pwrmgt.support/source/bootreason/bootmv`
 GPS: `gps`, `gps on/off/sync/setloc/advert`, `get gps`, `set gps duty <sec>`
@@ -838,6 +839,8 @@ Repeaters and room servers default to `CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC
   went away is reported as a DTR drop in three cases: DTR low, VBUS removed, and a bus reset. The reset case exists
   because the CDC class keeps the old line state across a reset, so nothing else says that the port the host had open
   is gone (a hub resetting upstream leaves VBUS up). Bus suspend, resume and reset also reach a second callback.
+  While a host is on the bus (from reset, configuration or resume until suspend or VBUS loss) the module blocks
+  ESP32 light sleep: sleep stops the USB clock and the host loses the device without being told.
 - **`ZephyrCompanionUSB`** (companion): the wired companion transport, over the CDC port or a plain UART
   (`zephcore,companion-uart`). Framing: `<` (to the node) or `>` (from it), a little-endian 16-bit length, the payload;
   a first byte that is printable and not `<` starts the text CLI instead. It has its own receive queue and an
@@ -850,7 +853,7 @@ Repeaters and room servers default to `CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC
 
 ### 7.5 Board (`adapters/board/`)
 
-- Battery ADC with optional regulator-gated voltage divider, 8-sample average (boards with `zephyr,user` ADC node; MG24 has no battery divider, ADC disabled)
+- Battery ADC with optional regulator-gated voltage divider, 8-sample average (boards with `zephyr,user` ADC node; MG24 has no battery divider, ADC disabled). A board with a fuel gauge (AXP2101) reads voltage and charge from it instead; one with an nPM1300 charger (XIAO nRF54LM20A) reads the voltage from the PMIC's own ADC through the sensor API and takes the percentage from the discharge curve
 - UF2 bootloader entry via GPREGRET magic (0x57 = UF2, 0xA8 = BLE DFU)
 - TX LED bracketing for LoRa transmissions (gated by the LED master switch below)
 - Bootloader version detection via flash memory scan
@@ -858,9 +861,9 @@ Repeaters and room servers default to `CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC
 - `powerOff()` (CLI `poweroff`/`shutdown`, UI power-off, low-battery shutdown all end in `zephcore_power_off()`, `board/zephyr_poweroff.c`): UI hook (heartbeat, display), GPS/sensor/buzzer rails off, LoRa held in reset, sw0 SENSE armed (nRF), power latch released, System OFF
 - Upstream's pwrmgt getters: reset cause from `boot_info`, the last fatal error from `fatal_reboot.c`'s `__noinit` record (reason, pc, lr, thread; resolve pc with `addr2line` on the same build), shutdown reason from the `/lfs/shutdn` marker, battery voltage at boot
 
-**Telemetry** (`REQ_TYPE_GET_TELEMETRY_DATA`, every role, upstream's shape): battery on channel 1, then `sensors.querySensors()` (`adapters/sensors/ZephyrSensorManager.cpp`): GPS position on channel 1 while the GPS is on and has a fix, each environment sensor and power-monitor channel found at boot on its own channel from 2 up (probe order), board-local analog sensors (T1000-E) on channel 1; then the MCU temperature on channel 1. Servers give guests battery + MCU temperature only and honour the requester's inverse permission mask, as upstream. Encoded by `helpers/compat/CayenneLPP.h`: upstream's library API and wire format, but values round to the nearest step where the library truncates.
+**Telemetry** (`REQ_TYPE_GET_TELEMETRY_DATA`, every role, upstream's shape): battery on channel 1, then `sensors.querySensors()` (`adapters/sensors/ZephyrSensorManager.cpp`): GPS position on channel 1 while the GPS is on and has a fix, each environment sensor and power-monitor channel found at boot on its own channel from 2 up (probe order), board-local analog sensors (T1000-E) on channel 1; then the MCU temperature on channel 1 (the SoC's die sensor: the `die-temp0` alias, which is `coretemp` on ESP32-S3/C3/C6, else the Nordic nodelabel `temp`; omitted where there is none: classic ESP32, STM32WL, MG24). Servers give guests battery + MCU temperature only and honour the requester's inverse permission mask, as upstream. Encoded by `helpers/compat/CayenneLPP.h`: upstream's library API and wire format, but values round to the nearest step where the library truncates.
 
-**Clock** (`adapters/clock/ZephyrRTCClock`): `setCurrentTime()` also writes the hardware RTC when the board has one (coalesced on the system work queue; a time outside 2000-2099 is not written), as upstream's `AutoDiscoverRTCClock` writes its chip; `seedCurrentTime()` is the boot restore, not written back. A chip is adopted at boot only once it is identified (`adapters/clock/ZephyrRTCDiscover.c`), because other parts can answer at the same address: a device is passed over when two reads each show a bit set that the chip's data sheet fixes at zero, or a time field out of range, and a time is restored only from a read in which every field is valid. The time is written in each chip's own encoding (the RX8130CE takes a one-hot weekday, `weekday-one-hot` in its descriptor), and an RV-3028 whose descriptor carries `rv3028-eeprom-config` (the RAK12002 on a RAK4631) has that configuration, its backup switchover, stored in the chip's EEPROM. Without a hardware RTC, the last time read is kept in no-init memory (RTC slow memory on ESP32) and restored after a reset that keeps RAM (reboot, crash, watchdog), as upstream's `ESP32RTCClock`; a power cycle starts from 1970 again.
+**Clock** (`adapters/clock/ZephyrRTCClock`): `setCurrentTime()` also writes the hardware RTC when the board has one (coalesced on the system work queue; a time outside 2000-2099 is not written), as upstream's `AutoDiscoverRTCClock` writes its chip; `seedCurrentTime()` is the boot restore, not written back. A chip is adopted at boot only once it is identified (`adapters/clock/ZephyrRTCDiscover.c`), because other parts can answer at the same address: a device is passed over when two reads each show a bit set that the chip's data sheet fixes at zero, or a time field out of range, and a time is restored only from a read in which every field is valid. An RV-3028 cleanly identified in 12-hour mode has its `twelve-hour-bit` cleared first, so the chip converts its own hours. No time is taken from a cleanly identified RV-3028 whose `twelve-hour-bit` register cannot be read or reads FFh, or whose clear or re-read fails. The time is written in each chip's own encoding (the RX8130CE takes a one-hot weekday, `weekday-one-hot` in its descriptor), and an RV-3028 whose descriptor carries `rv3028-eeprom-config` (the RAK12002 on a RAK4631) has that configuration, its backup switchover, stored in the chip's EEPROM. `zephcore_rtc_snapshot()` gives `hw rtc` each candidate's outcome from the last probe run and the adopted chip, published together when the run ends. Without a hardware RTC, the last time read is kept in no-init memory (RTC slow memory on ESP32) and restored after a reset that keeps RAM (reboot, crash, watchdog), as upstream's `ESP32RTCClock`; a power cycle starts from 1970 again.
 
 **LED master switch** (`helpers/led_gate.{c,h}`, `set leds on|off`, all roles): one process-wide
 flag every LED driver consults — heartbeat and unread-message LEDs in `helpers/ui/ui_common.c`, the
@@ -871,10 +874,29 @@ hook so a CLI change also stops a lit heartbeat and refreshes the UI's LEDs page
 `NodePrefs.leds_disabled` (companion offset 93; repeater offset 120, magic-encoded — see §13).
 Does not cover the display backlight, which has its own UI brightness setting (`display_brightness`).
 
+**LED brightness** (`set leds.brightness 0-100`): a board that aliases `heartbeat-pwm-led` /
+`lora-tx-pwm-led` drives that LED through PWM (`zephcore_led_pwm_write()`), and the PWM alias wins over
+`led0` / `lora-tx-led`. `CONFIG_ZEPHCORE_LED_PWM` follows the aliases: it selects `CONFIG_PWM` and stops
+the server and observer mains from configuring `led0` as a GPIO, because that pin belongs to the PWM
+driver. Persisted in `prefs.json` as `zc.leds_brightness`; it is not part of the legacy binary files.
+
 ### 7.6 WiFi / MQTT / TCP Transports
 
-- **`adapters/wifi/ZephyrWiFiStation.c`**: WiFi STA client (ESP32) used by the observer, the repeater uplink and the WiFi companion
-- **`adapters/mqtt/ZephyrMQTTPublisher.c`**: MQTT publisher for observed/uplinked packets
+- **`adapters/wifi/ZephyrWiFiStation.c`**: WiFi STA client (ESP32) used by the observer, the repeater uplink and the WiFi companion.
+  The observer and the uplink run with the driver's WiFi power save (minimum modem sleep: the WiFi radio is off
+  between the access point's DTIM beacons); the WiFi companion requests power save off, as before. On ESP32
+  light-sleep builds the station blocks SoC light sleep until the link is ready (DHCP, SNTP) and its client has
+  reported a session with `zc_wifi_station_session_up()`, and again whenever either is lost. With no such client
+  (the WiFi companion) the block stays for the life of the boot. While the SoC sleeps the WiFi MAC wakes it for
+  each beacon it listens to, and `helpers/pm_esp32_wake.c` refuses a sleep while the MAC's beacon timer is active.
+  On light-sleep companion builds the WiFi companion runs with power save too and reports a session at once, so
+  the station blocks sleep only while the link is not ready.
+- **`adapters/mqtt/ZephyrMQTTPublisher.c`**: MQTT publisher for observed/uplinked packets. It reports its session to
+  the station: up at CONNACK, down when the session ends for any reason. Keepalive: PINGREQ once a quarter of
+  the 60 s keepalive is left, so a broker that enforces the keepalive without grace does not close an idle
+  session.
+  TLS is used without certificate verification, but the chain still has to be parsed: the uplink and observer
+  builds carry P-256 and P-384 with SHA-256 and SHA-384 for that.
 - **`adapters/ota/wifi_ota.c`**: WiFi SoftAP + HTTP firmware upload to MCUboot slot1 (ESP32, requires `--sysbuild`)
 
 Companion transports, as upstream's `companion_radio`: each is a `BaseSerialInterface`
@@ -882,7 +904,9 @@ Companion transports, as upstream's `companion_radio`: each is a `BaseSerialInte
 BLE, USB/UART and TCP can all be connected at once; every connected client gets every
 frame (a reply to one app also reaches the other).
 
-- **`adapters/ble/ZephyrBLE.cpp`** (+ `ble_gatt_layout.cpp`, `ble_dfu.cpp`): BLE NUS
+- **`adapters/ble/ZephyrBLE.cpp`** (+ `ble_gatt_layout.cpp`, `ble_dfu.cpp`): BLE NUS. Blocks ESP32 light sleep from
+  connect until the link is encrypted (pairing does not survive sleep); an encrypted link and advertising do not
+  block it.
 - **`adapters/usb/ZephyrCompanionUSB.cpp`**: USB CDC-ACM, or a plain UART (`zephcore,companion-uart` chosen node; the only link on the Bluetooth-less LoRa-E5), with the text CLI
 - **`adapters/transport/TcpCompanionTransport.c`**: TCP (port 5000, MeshCore `SerialWifiInterface` framing) on native Linux and on WiFi companions (`app/CompanionWifi.cpp`, `capabilities: wifi: true`)
 - **`adapters/transport/frame_txq.c`**: the TX queue BLE and TCP share (congestion, overflow slot, lossless replies)

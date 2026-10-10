@@ -40,6 +40,8 @@ struct rtc_desc {
 	uint8_t  status_mask;  /* "time unreliable" bit within status_reg */
 	const uint8_t *zero;   /* 7 bytes of bits the data sheet shows as 0, or NULL */
 	bool     week_one_hot; /* weekday as one bit per day, not 0-6 */
+	uint8_t  h12_reg;      /* register of the 12-hour bit */
+	uint8_t  h12_mask;     /* 12-hour bit, or 0 if none */
 #if RTC_RV3028_CFG
 	const uint8_t *cfg;    /* rv3028-eeprom-config triplets, or NULL */
 	uint8_t  cfg_len;
@@ -79,6 +81,10 @@ DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_CFG_ARRAY)
 #define RTC_CFG_FIELDS(node)
 #endif
 
+#define RTC_H12(node, i)                                              \
+	COND_CODE_1(DT_NODE_HAS_PROP(node, twelve_hour_bit),          \
+		    (DT_PROP_BY_IDX(node, twelve_hour_bit, i)), (0))
+
 #define RTC_DESC_ENTRY(node)                                          \
 	{                                                             \
 		.bus         = DEVICE_DT_GET(DT_BUS(node)),           \
@@ -91,6 +97,8 @@ DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_CFG_ARRAY)
 			DT_NODE_HAS_PROP(node, zero_mask),             \
 			(RTC_ZERO_NAME(node)), (NULL)),                \
 		.week_one_hot = DT_PROP(node, weekday_one_hot),       \
+		.h12_reg     = (uint8_t)RTC_H12(node, 0),             \
+		.h12_mask    = (uint8_t)RTC_H12(node, 1),             \
 		RTC_CFG_FIELDS(node)                                  \
 		.name        = DT_NODE_FULL_NAME(node),               \
 	},
@@ -106,6 +114,11 @@ static bool s_probed;
  * adopted, the first save probes again. */
 static bool s_skipped_ff;
 static bool s_reprobed;
+
+/* Per-candidate outcome of the last probe run; UNPROBED if not reached. */
+static uint8_t s_state[ARRAY_SIZE(rtc_descs)];
+/* Guards s_state and s_active, published together by rtc_probe(). */
+static struct k_spinlock s_report_lock;
 
 #define BCD2BIN(x) ((((x) >> 4) & 0x0F) * 10 + ((x) & 0x0F))
 #define BIN2BCD(x) ((((x) / 10) << 4) | ((x) % 10))
@@ -185,7 +198,9 @@ static bool rtc_ruled_out(const struct rtc_desc *d, const uint8_t blk[7])
 	return !rtc_fields_ok(d, blk) && rtc_power_flag(d, blk) != 1;
 }
 
-enum rtc_verdict { RTC_ABSENT, RTC_ERASED, RTC_NOT_THIS, RTC_FOUND, RTC_FOUND_GARBLED };
+enum rtc_verdict {
+	RTC_UNREAD, RTC_ABSENT, RTC_ERASED, RTC_NOT_THIS, RTC_FOUND, RTC_FOUND_GARBLED
+};
 
 static bool rtc_all_ff(const uint8_t blk[7])
 {
@@ -198,15 +213,21 @@ static bool rtc_all_ff(const uint8_t blk[7])
 }
 
 /* Decide whether the device at d is the RTC it declares: ruled out only when
- * two reads each rule it out. RTC_FOUND leaves the block to decode in blk;
- * RTC_FOUND_GARBLED is this RTC with no clean read to take a time from. */
+ * two reads each rule it out. A first read ending in -EIO is RTC_ABSENT (a
+ * NACK); a bus not ready or any other failure is RTC_UNREAD. RTC_FOUND leaves
+ * the block to decode in blk; RTC_FOUND_GARBLED is this RTC with no clean
+ * read to take a time from. */
 static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 {
 	uint8_t again[7];
 
-	if (!device_is_ready(d->bus) ||
-	    i2c_burst_read(d->bus, d->addr, d->time_reg, blk, 7) != 0) {
-		return RTC_ABSENT;
+	if (!device_is_ready(d->bus)) {
+		return RTC_UNREAD;
+	}
+	int rc = i2c_burst_read(d->bus, d->addr, d->time_reg, blk, 7);
+
+	if (rc != 0) {
+		return rc == -EIO ? RTC_ABSENT : RTC_UNREAD;
 	}
 	if (rtc_all_ff(blk)) {
 		return RTC_ERASED;
@@ -222,6 +243,30 @@ static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 	}
 	memcpy(blk, again, sizeof(again));
 	return RTC_FOUND;
+}
+
+/* Clear a set 12-hour bit and re-read blk; the chip converts its hours
+ * itself. False on a failed or FFh read of the bit, or a failed clear or
+ * re-read. */
+static bool rtc_clear_12h(const struct rtc_desc *d, uint8_t blk[7])
+{
+	uint8_t r;
+
+	if (d->h12_mask == 0) {
+		return true;
+	}
+	if (i2c_reg_read_byte(d->bus, d->addr, d->h12_reg, &r) != 0 || r == 0xFF) {
+		return false;
+	}
+	if (!(r & d->h12_mask)) {
+		return true;
+	}
+	if (i2c_reg_write_byte(d->bus, d->addr, d->h12_reg, r & ~d->h12_mask) != 0 ||
+	    i2c_burst_read(d->bus, d->addr, d->time_reg, blk, 7) != 0) {
+		return false;
+	}
+	LOG_INF("%s: 12-hour mode cleared", d->name);
+	return true;
 }
 
 /* The 7-byte time block for an epoch, in d's register order. False outside
@@ -562,27 +607,37 @@ static void rv3028_save_retry_fn(struct k_work *work)
 
 #endif /* RTC_RV3028_CFG */
 
-/* Probe the chips in order; cache the first one found in s_active. Stop at
- * the first that holds a sane time, returned via epoch_out. */
-static bool rtc_probe(uint32_t *epoch_out)
+/* Probe the chips in order; return the first one found in *adopted and each
+ * outcome in state[]. Stop at the first that holds a sane time, returned via
+ * epoch_out. */
+static bool rtc_probe_run(uint32_t *epoch_out, uint8_t state[],
+			  const struct rtc_desc **adopted)
 {
-	s_skipped_ff = false;
-
 	for (size_t i = 0; i < ARRAY_SIZE(rtc_descs); i++) {
 		const struct rtc_desc *d = &rtc_descs[i];
 		uint8_t blk[7];
 		enum rtc_verdict v = rtc_identify(d, blk);
 
+		if (v == RTC_UNREAD) {
+			continue;
+		}
 		if (v == RTC_ERASED) {
+			state[i] = ZEPHCORE_RTC_ALL_FF;
 			s_skipped_ff = true;
 			continue;
 		}
 		if (v == RTC_NOT_THIS) {
+			state[i] = ZEPHCORE_RTC_ABSENT;
 			LOG_INF("%s: device at the address is not this RTC, skipped", d->name);
 			continue;
 		}
 		if (v == RTC_ABSENT) {
+			state[i] = ZEPHCORE_RTC_ABSENT;
 			continue;
+		}
+		state[i] = ZEPHCORE_RTC_PRESENT;
+		if (v == RTC_FOUND && !rtc_clear_12h(d, blk)) {
+			v = RTC_FOUND_GARBLED;
 		}
 
 #if RTC_RV3028_CFG
@@ -596,8 +651,8 @@ static bool rtc_probe(uint32_t *epoch_out)
 			clean = false;
 		}
 #endif
-		if (s_active == NULL) {
-			s_active = d;  /* RTC => our write-back target */
+		if (*adopted == NULL) {
+			*adopted = d;  /* RTC => our write-back target */
 #if RTC_RV3028_CFG
 			if (clean) {
 				rv3028_configure(d);
@@ -658,6 +713,26 @@ static bool rtc_probe(uint32_t *epoch_out)
 	return false;
 }
 
+/* Run a probe and publish its outcomes and adopted chip together, so a
+ * reader sees one run, never a mix. */
+static bool rtc_probe(uint32_t *epoch_out)
+{
+	uint8_t state[ARRAY_SIZE(rtc_descs)];
+	const struct rtc_desc *adopted = NULL;
+	bool found;
+
+	memset(state, ZEPHCORE_RTC_UNPROBED, sizeof(state));
+	s_skipped_ff = false;
+	found = rtc_probe_run(epoch_out, state, &adopted);
+
+	k_spinlock_key_t key = k_spin_lock(&s_report_lock);
+
+	memcpy(s_state, state, sizeof(state));
+	s_active = adopted;
+	k_spin_unlock(&s_report_lock, key);
+	return found;
+}
+
 bool zephcore_rtc_restore(uint32_t *epoch_out)
 {
 	s_probed = true;
@@ -709,6 +784,35 @@ void zephcore_rtc_save(uint32_t epoch)
 	LOG_DBG("RTC %s: persisted time", d->name);
 }
 
+size_t zephcore_rtc_declared(void)
+{
+	return ARRAY_SIZE(rtc_descs);
+}
+
+size_t zephcore_rtc_snapshot(struct zephcore_rtc_entry *out, size_t max)
+{
+	size_t n = MIN(max, ARRAY_SIZE(rtc_descs));
+
+	k_spinlock_key_t key = k_spin_lock(&s_report_lock);
+
+	for (size_t i = 0; i < n; i++) {
+		const struct rtc_desc *d = &rtc_descs[i];
+
+		out[i].name   = d->name;
+		out[i].bus    = d->bus->name;
+		out[i].addr   = d->addr;
+		out[i].state  = (enum zephcore_rtc_state)s_state[i];
+		out[i].active = (s_active == d);
+	}
+	k_spin_unlock(&s_report_lock, key);
+	return n;
+}
+
+bool zephcore_rtc_probed(void)
+{
+	return s_probed;
+}
+
 #else  /* no zephcore,rtc-i2c node in DT — link-compatible stubs */
 
 bool zephcore_rtc_restore(uint32_t *epoch_out)
@@ -720,6 +824,23 @@ bool zephcore_rtc_restore(uint32_t *epoch_out)
 void zephcore_rtc_save(uint32_t epoch)
 {
 	ARG_UNUSED(epoch);
+}
+
+size_t zephcore_rtc_declared(void)
+{
+	return 0;
+}
+
+size_t zephcore_rtc_snapshot(struct zephcore_rtc_entry *out, size_t max)
+{
+	ARG_UNUSED(out);
+	ARG_UNUSED(max);
+	return 0;
+}
+
+bool zephcore_rtc_probed(void)
+{
+	return false;
 }
 
 #endif /* DT_HAS_COMPAT_STATUS_OKAY(zephcore_rtc_i2c) */
