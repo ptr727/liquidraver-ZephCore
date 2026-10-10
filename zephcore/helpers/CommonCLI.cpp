@@ -511,7 +511,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 		}
 #endif
 		/* reply already starts past a local request's "xx|" prefix. */
-		if (sender_timestamp == 0 && _reply_hdr_used < cap) {
+		if (sender_timestamp == 0) {
 			cap -= _reply_hdr_used;
 		}
 		zephcore_hw::handle(command, reply, cap, _board, _callbacks);

@@ -16,6 +16,7 @@
 #include <zephyr/version.h>
 
 #include <mesh/MeshCore.h>
+#include <mesh/Utils.h>
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -26,15 +27,8 @@ extern "C" {
 #include "../adapters/clock/ZephyrRTCDiscover.h"
 }
 
-#if __has_include("../adapters/sensors/ZephyrEnvSensors.h")
-#include "../adapters/sensors/ZephyrEnvSensors.h"
-#define HW_HAS_SENSOR_HDR 1
-#endif
-
-#if __has_include("../adapters/gps/ZephyrGPSManager.h")
 #include "../adapters/gps/ZephyrGPSManager.h"
-#define HW_HAS_GPS_HDR 1
-#endif
+#include "../adapters/sensors/ZephyrEnvSensors.h"
 
 #define HW_GNSS_NODE DT_NODELABEL(gnss)
 
@@ -47,7 +41,7 @@ namespace {
 
 /* Room kept free for the "\n... next:NNNNN" resume marker. */
 #define HW_NEXT_RESERVE 16
-/* Largest resume index the marker holds and the parser accepts. */
+/* Largest resume index the marker holds; the parser clamps to it. */
 #define HW_PAGE_INDEX_MAX 99999U
 
 /* Paged line sink: every section writes through it, so all page alike. */
@@ -95,9 +89,6 @@ void sink_line(Sink *s, const char *fmt, ...)
 	va_start(ap, fmt);
 	int w = vsnprintf(line, sizeof(line), fmt, ap);
 	va_end(ap);
-	if (w < 0) {
-		return;
-	}
 	if ((size_t)w >= sizeof(line)) {
 		memcpy(line + sizeof(line) - 4, "...", 3);
 	}
@@ -154,12 +145,13 @@ struct I2cDecl {
 		(uint16_t)DT_REG_ADDR(node_id),                  \
 	},
 
-/* Every enabled, addressable node on any I2C bus. */
-#define HW_I2C_NODE(node_id)                                              \
-	IF_ENABLED(UTIL_AND(DT_ON_BUS(node_id, i2c),                      \
-		   UTIL_AND(DT_NODE_HAS_PROP(node_id, reg),                \
-			    DT_NODE_HAS_PROP(node_id, compatible))),      \
-		   (HW_I2C_ENTRY(node_id)))
+/* An enabled, addressable node on an I2C bus. */
+#define HW_I2C_CHIP(node_id)                                          \
+	UTIL_AND(DT_ON_BUS(node_id, i2c),                             \
+		 UTIL_AND(DT_NODE_HAS_PROP(node_id, reg),               \
+			  DT_NODE_HAS_PROP(node_id, compatible)))
+
+#define HW_I2C_NODE(node_id) IF_ENABLED(HW_I2C_CHIP(node_id), (HW_I2C_ENTRY(node_id)))
 
 const I2cDecl i2c_decls[] = {
 	DT_FOREACH_STATUS_OKAY_NODE(HW_I2C_NODE)
@@ -173,11 +165,7 @@ constexpr size_t i2c_decl_count() { return ARRAY_SIZE(i2c_decls) - 1; }
  * declared device is not listed, so it is not scanned. */
 #define HW_I2C_BUS_ENTRY(node_id) DEVICE_DT_GET(DT_BUS(node_id)),
 
-#define HW_I2C_BUS_NODE(node_id)                                          \
-	IF_ENABLED(UTIL_AND(DT_ON_BUS(node_id, i2c),                      \
-		   UTIL_AND(DT_NODE_HAS_PROP(node_id, reg),                \
-			    DT_NODE_HAS_PROP(node_id, compatible))),      \
-		   (HW_I2C_BUS_ENTRY(node_id)))
+#define HW_I2C_BUS_NODE(node_id) IF_ENABLED(HW_I2C_CHIP(node_id), (HW_I2C_BUS_ENTRY(node_id)))
 
 const struct device *const i2c_bus_refs[] = {
 	DT_FOREACH_STATUS_OKAY_NODE(HW_I2C_BUS_NODE)
@@ -199,7 +187,7 @@ bool declared_names_at(const char *bus, uint16_t addr, char *out, size_t cap)
 		}
 		int w = snprintf(out + used, cap - used, "%s%s", used ? "|" : "",
 				 i2c_decls[i].compat);
-		if (w < 0 || (size_t)w >= cap - used) {
+		if ((size_t)w >= cap - used) {
 			out[0] = '\0';
 			return false;
 		}
@@ -262,19 +250,14 @@ bool reset_causes(uint32_t *cause, char *out, size_t cap)
 void section_board(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 {
 	sink_line(s, "board: %s", CONFIG_BOARD_TARGET);
-	if (board != nullptr) {
-		sink_line(s, "name: %s", board->getManufacturerName());
-	}
+	sink_line(s, "name: %s", board->getManufacturerName());
 	sink_line(s, "soc: %s", CONFIG_SOC);
 	sink_line(s, "zephyr: %s", KERNEL_VERSION_STRING);
-
-	if (cb != nullptr) {
-		sink_line(s, "fw: %s (%s)", cb->getFirmwareVer(), cb->getBuildDate());
-		sink_line(s, "role: %s", cb->getRole());
-	}
+	sink_line(s, "fw: %s (%s)", cb->getFirmwareVer(), cb->getBuildDate());
+	sink_line(s, "role: %s", cb->getRole());
 
 	char bl[48];
-	if (board != nullptr && board->getBootloaderVersion(bl, sizeof(bl))) {
+	if (board->getBootloaderVersion(bl, sizeof(bl))) {
 		sink_line(s, "bootloader: %s", bl);
 	}
 
@@ -291,9 +274,7 @@ void section_board(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 	ssize_t n = hwinfo_get_device_id(devid, sizeof(devid));
 	if (n > 0) {
 		char hex[sizeof(devid) * 2 + 1];
-		for (ssize_t i = 0; i < n && (size_t)i < sizeof(devid); i++) {
-			snprintf(hex + i * 2, 3, "%02x", devid[i]);
-		}
+		mesh::Utils::toHex(hex, devid, (size_t)n);
 		sink_line(s, "devid: %s", hex);
 	} else {
 		sink_line(s, "devid: not supported");
@@ -455,15 +436,13 @@ void section_gps(Sink *s)
 	sink_line(s, "gnss: none declared in devicetree");
 #endif
 
-#ifdef HW_HAS_GPS_HDR
 	sink_line(s, "  available: %s", gps_is_available() ? "yes" : "no");
 	sink_line(s, "  enabled: %s", gps_is_enabled() ? "yes" : "no");
-#endif
 }
 
 void section_sensors(Sink *s)
 {
-#if defined(HW_HAS_SENSOR_HDR) && IS_ENABLED(CONFIG_SENSOR)
+#if IS_ENABLED(CONFIG_SENSOR)
 	int n = env_sensor_count();
 
 	if (n <= 0) {
@@ -502,9 +481,7 @@ void section_sensors(Sink *s)
 void section_summary(Sink *s, CommonCLICallbacks *cb)
 {
 	sink_line(s, "%s (%s)", CONFIG_BOARD, CONFIG_SOC);
-	if (cb != nullptr) {
-		sink_line(s, "fw %s role %s", cb->getFirmwareVer(), cb->getRole());
-	}
+	sink_line(s, "fw %s role %s", cb->getFirmwareVer(), cb->getRole());
 
 	RtcView v;
 
@@ -576,10 +553,10 @@ bool parse_tail(const char *rest, unsigned *start)
 	char *end = nullptr;
 	unsigned long v = strtoul(rest, &end, 10);
 
-	while (end != nullptr && *end == ' ') {
+	while (*end == ' ') {
 		end++;
 	}
-	if (end != nullptr && *end != '\0') {
+	if (*end != '\0') {
 		return false;
 	}
 

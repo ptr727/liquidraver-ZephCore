@@ -61,14 +61,14 @@ commands only from upstream's set, and ZephCore-only commands stay local by desi
 
 | Command | Description |
 |---------|-------------|
-| `hw` | Summary. Emits exactly these fields, one per line: `<board> (<soc>)` — the short board name and SoC, not the full board target — then `fw`/`role`, `rtc` (the chip the boot probe adopted for write-back), `gnss`, `i2c` count, `reset`. `hw N` resumes it |
+| `hw` | Summary. Emits exactly these fields, one per line: `<board> (<soc>)` — the short board name and SoC, not the full board target — then `fw`/`role`, `rtc` (the chip the last probe run adopted for write-back), `gnss`, `i2c` count, `reset`. `hw N` resumes it |
 | `hw board [start]` | `board`, `name`, `soc`, `zephyr`, `fw`, `role`, `bootloader` (when the board can report one), `reset`, `devid` |
-| `hw rtc [start]` | Declared I2C RTC candidates and the boot probe's outcome for each |
+| `hw rtc [start]` | Declared I2C RTC candidates and the last probe run's outcome for each |
 | `hw i2c [start]` | Devicetree-declared I2C inventory. **Not a bus scan** — no bus traffic |
 | `hw i2c scan [start]` | Live scan of 0x08–0x77 on each bus carrying a declared device, naming declared addresses (see the coverage note below) |
-| `hw gps [start]` | GNSS driver compatible, transport, baud, and enable state. A GNSS node disabled in devicetree reports `declared but disabled` (the summary says `disabled`). A node whose UART is disabled reports `available: no`, since the GPS manager does not use it |
+| `hw gps [start]` | GNSS driver compatible, transport, baud, and enable state. A GNSS node disabled in devicetree reports `declared but disabled` (the summary says `disabled`) |
 | `hw sensors [start]` | Each sensor the boot probe found, environment and power monitors alike, and the fields a fresh read of it returns. Each one on the page being returned is read on the spot, as for a telemetry request |
-| `hw all [start]` | `board`, `rtc`, `i2c`, `gps` and `sensors`, in that order, so it reads each sensor. Not the summary, and not `hw i2c scan`, which probes every address |
+| `hw all [start]` | `board`, `rtc`, `i2c`, `gps` and `sensors`, in that order, reading each sensor whose line is on the page. Not the summary, and not `hw i2c scan`, which probes every address |
 | `hw <anything else>` | Usage string |
 
 `start` is an optional line index for resuming a truncated reply (see **Paging** below).
@@ -124,7 +124,7 @@ Every field is something the firmware *knows*. It never infers:
   an RTC fitted but not declared is invisible to the firmware, and the reply says exactly that.
   A board that declares candidates in a build with RTC autodiscovery disabled reports
   `rtc: N declared, autodiscovery disabled`.
-- An RTC candidate the boot probe never reached, whose I2C bus was not ready, or whose read
+- An RTC candidate the probe never reached, whose I2C bus was not ready, or whose read
   failed with any error other than `-EIO`, reports `unprobed`, not `absent`. The probe stops at the
   first chip holding a valid time.
 - `absent` means the read ended in `-EIO`, which is how every driver here reports an address

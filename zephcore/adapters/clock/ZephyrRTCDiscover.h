@@ -70,7 +70,7 @@ struct zephcore_rtc_entry {
 	const char *name;              /* DT node full name, e.g. "rtc-rv3028@52" */
 	const char *bus;               /* I2C bus device name */
 	uint16_t addr;                 /* I2C address */
-	enum zephcore_rtc_state state; /* what the boot probe found */
+	enum zephcore_rtc_state state; /* what the last probe run found */
 	bool active;                   /* adopted as the write-back target */
 };
 
