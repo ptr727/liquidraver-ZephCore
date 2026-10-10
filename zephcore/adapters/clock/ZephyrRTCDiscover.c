@@ -115,13 +115,9 @@ static bool s_probed;
 static bool s_skipped_ff;
 static bool s_reprobed;
 
-/* Per-candidate probe outcome, for the reporting accessors. Stays UNPROBED for
- * entries the loop never reached -- it stops at the first chip holding a valid
- * time, so "not absent" and "present" are different answers and we keep them
- * apart rather than inferring one from the other. */
+/* Per-candidate outcome of the last probe run; UNPROBED if not reached. */
 static uint8_t s_state[ARRAY_SIZE(rtc_descs)];
-/* Guards s_state and s_active together for zephcore_rtc_snapshot(): a
- * re-probe publishes them from the system work queue while `hw` reads them. */
+/* Guards s_state and s_active, published together by rtc_probe(). */
 static struct k_spinlock s_report_lock;
 
 #define BCD2BIN(x) ((((x) >> 4) & 0x0F) * 10 + ((x) & 0x0F))
@@ -617,7 +613,6 @@ static void rv3028_save_retry_fn(struct k_work *work)
 static bool rtc_probe_run(uint32_t *epoch_out, uint8_t state[],
 			  const struct rtc_desc **adopted)
 {
-
 	for (size_t i = 0; i < ARRAY_SIZE(rtc_descs); i++) {
 		const struct rtc_desc *d = &rtc_descs[i];
 		uint8_t blk[7];
@@ -718,12 +713,8 @@ static bool rtc_probe_run(uint32_t *epoch_out, uint8_t state[],
 	return false;
 }
 
-/* rtc_probe() can run more than once: zephcore_rtc_save() probes if restore
- * never ran, or again after an all-0xFF skip with no chip adopted. Each run
- * starts from no outcome, so candidates it never reached report UNPROBED
- * rather than the previous run's answer. The outcomes and the adopted chip
- * are collected locally and published together at the end, so `hw` sees
- * one run or the other, never a mix. */
+/* Run a probe and publish its outcomes and adopted chip together, so a
+ * reader sees one run, never a mix. */
 static bool rtc_probe(uint32_t *epoch_out)
 {
 	uint8_t state[ARRAY_SIZE(rtc_descs)];
@@ -801,10 +792,6 @@ size_t zephcore_rtc_declared(void)
 size_t zephcore_rtc_snapshot(struct zephcore_rtc_entry *out, size_t max)
 {
 	size_t n = MIN(max, ARRAY_SIZE(rtc_descs));
-
-	if (out == NULL) {
-		return 0;
-	}
 
 	k_spinlock_key_t key = k_spin_lock(&s_report_lock);
 

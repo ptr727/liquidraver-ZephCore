@@ -36,48 +36,24 @@ extern "C" {
 #define HW_HAS_GPS_HDR 1
 #endif
 
-/* The GNSS node and its UART both okay: the devicetree half of the GPS
- * manager's HAS_GPS_UART (adapters/gps/gps_internal.h), which also needs a
- * supported compatible; `available` below reports that part. */
-#if DT_NODE_EXISTS(DT_NODELABEL(gnss))
-#define HW_GNSS_OKAY (DT_NODE_HAS_STATUS(DT_NODELABEL(gnss), okay) && \
-		      DT_NODE_HAS_STATUS(DT_BUS(DT_NODELABEL(gnss)), okay))
-#else
-#define HW_GNSS_OKAY 0
-#endif
+#define HW_GNSS_NODE DT_NODELABEL(gnss)
+
+/* Candidates declared but compiled out: the discovery stubs report none. */
+#define HW_RTC_DISABLED (!IS_ENABLED(CONFIG_ZEPHCORE_RTC_AUTODISCOVER) && \
+			 DT_NUM_INST_STATUS_OKAY(zephcore_rtc_i2c) > 0)
 
 namespace zephcore_hw {
 namespace {
 
-/* Room reserved for the " next:NNNNN" resume marker, so a truncated page can
- * always say where to resume. Without the reservation the marker is exactly
- * what gets cut off, leaving an unresumable page. */
-#define HW_NEXT_RESERVE 12
-
-/*
- * Largest page index the marker can carry and the parser will accept.
- *
- * Set by what the marker format holds: " next:" is 6 characters, so
- * HW_NEXT_RESERVE (12) leaves 5 digits plus the NUL -- " next:99999" is
- * exactly 11 characters. The emitter clamps to this rather than letting
- * snprintf cut digits, and the parser accepts up to the same value, because a
- * page that advertises an index the parser then silently rewrites pages the
- * same lines forever. One constant, so the two cannot drift apart.
- */
+/* Room kept free for the "\n... next:NNNNN" resume marker. */
+#define HW_NEXT_RESERVE 16
+/* Largest resume index the marker holds and the parser accepts. */
 #define HW_PAGE_INDEX_MAX 99999U
 
-/*
- * Paged line sink.
- *
- * Every section writes through this, so `hw all` and a single subcommand page
- * identically and there is one place that can overflow. Line indices are
- * unsigned end to end: a resume index parsed as unsigned and then rendered
- * signed is how a page emits "next:-1" and becomes unresumable.
- */
+/* Paged line sink: every section writes through it, so all page alike. */
 struct Sink {
 	char *buf;
-	size_t buf_cap; /* the caller's actual buffer size */
-	size_t cap;     /* usable capacity, already excluding HW_NEXT_RESERVE */
+	size_t cap;     /* write limit, excluding HW_NEXT_RESERVE */
 	size_t len;
 	unsigned first; /* first line index to emit */
 	unsigned line;  /* index of the line being considered */
@@ -88,10 +64,7 @@ struct Sink {
 void sink_init(Sink *s, char *buf, size_t cap, unsigned first)
 {
 	s->buf = buf;
-	/* Remember the caller's real capacity: cap below is the reduced write
-	 * limit, and sink_finish() must not assume the difference exists. */
-	s->buf_cap = cap;
-	s->cap = (cap > HW_NEXT_RESERVE) ? cap - HW_NEXT_RESERVE : 1;
+	s->cap = cap - HW_NEXT_RESERVE;
 	s->len = 0;
 	s->first = first;
 	s->line = 0;
@@ -100,13 +73,22 @@ void sink_init(Sink *s, char *buf, size_t cap, unsigned first)
 	buf[0] = '\0';
 }
 
+/* True if the next line will not be emitted; it is counted as skipped. */
+bool sink_skip(Sink *s)
+{
+	if (s->full || s->line < s->first) {
+		s->line++;
+		return true;
+	}
+	return false;
+}
+
 void sink_line(Sink *s, const char *fmt, ...)
 {
-	unsigned idx = s->line++;
-
-	if (s->full || idx < s->first) {
+	if (sink_skip(s)) {
 		return;
 	}
+	unsigned idx = s->line++;
 
 	char line[160];
 	va_list ap;
@@ -117,32 +99,20 @@ void sink_line(Sink *s, const char *fmt, ...)
 		return;
 	}
 	if ((size_t)w >= sizeof(line)) {
-		/* Longer than the render buffer: mark the cut, as below. */
 		memcpy(line + sizeof(line) - 4, "...", 3);
 	}
 
 	size_t need = strlen(line) + (s->len ? 1 : 0);
 	if (s->len == 0 && need >= s->cap) {
-		/* A line longer than a whole page would otherwise never be
-		 * emitted, and every resume would point back at it. Emit what
-		 * fits, marked as cut, so paging moves on. The page is not
-		 * marked full here: it now holds cap - 1 bytes, so any next
-		 * line fails the fit test below and sets ` next:N` itself, and
-		 * with no next line there is nothing left to resume. */
+		/* A line longer than a page is cut, so a resume moves past it. */
 		size_t keep = s->cap - 1;
 		line[keep] = '\0';
-		if (keep > 3) {
-			memcpy(line + keep - 3, "...", 3);
-		}
+		memcpy(line + keep - 3, "...", 3);
 		need = keep;
 	}
 	if (s->len + need >= s->cap) {
 		s->full = true;
-		/* Clamp rather than let snprintf truncate the digits: a cut
-		 * number is a plausible-looking index pointing somewhere else.
-		 * No section emits anywhere near this many lines, which is why
-		 * this is about provability rather than a reachable bug. */
-		s->next = (idx > HW_PAGE_INDEX_MAX) ? HW_PAGE_INDEX_MAX : idx;
+		s->next = idx;
 		return;
 	}
 
@@ -154,44 +124,18 @@ void sink_line(Sink *s, const char *fmt, ...)
 	s->buf[s->len] = '\0';
 }
 
-/* Append the resume marker if the page was cut short. */
 void sink_finish(Sink *s)
 {
 	if (s->len == 0 && !s->full) {
-		/* A start past the last line: an empty reply reads as an unknown
-		 * command on a companion. */
-		snprintf(s->buf, s->buf_cap, "no line %u, the report has %u", s->first, s->line);
-		return;
+		/* An empty reply reads as an unknown command on a companion. */
+		snprintf(s->buf, s->cap + HW_NEXT_RESERVE, "no line %u, the report has %u",
+			 s->first, s->line);
+	} else if (s->full) {
+		snprintf(s->buf + s->len, HW_NEXT_RESERVE, "\n... next:%u", s->next);
 	}
-	if (!s->full) {
-		return;
-	}
-
-	/* Normally cap excluded HW_NEXT_RESERVE so the marker fits, but a caller
-	 * passing cap <= HW_NEXT_RESERVE gets no reserve at all -- sink_init()
-	 * clamps cap to 1 there. Bound the write by what the buffer actually has
-	 * rather than by the reserve we hoped for; no current caller is that
-	 * small, and this is a reporting path that must not be the thing that
-	 * overruns a reply buffer. */
-	if (s->len >= s->buf_cap) {
-		return;
-	}
-	size_t room = s->buf_cap - s->len;
-	if (room > HW_NEXT_RESERVE) {
-		room = HW_NEXT_RESERVE;
-	}
-	snprintf(s->buf + s->len, room, " next:%u", s->next);
 }
 
-/* ================= devicetree I2C inventory =================
- *
- * Declared children only -- no bus traffic. Deliberately does not try to
- * resolve a struct device for each node: DEVICE_DT_GET_OR_NULL still expands
- * to DEVICE_DT_GET for any status-okay node, so a node with no driver bound
- * (every zephcore,rtc-i2c descriptor is exactly that -- data-only, probed by
- * raw I2C) would fail to link. Binding is reported by the adapters that
- * actually know it: `hw rtc` and `hw sensors`.
- */
+/* ================= devicetree I2C inventory ================= */
 
 struct I2cDecl {
 	const char *bus;
@@ -200,20 +144,8 @@ struct I2cDecl {
 	uint16_t addr;
 };
 
-/*
- * The bus string must be DEVICE_DT_NAME, not DT_NODE_FULL_NAME.
- *
- * Zephyr derives a device's runtime name as DT_PROP_OR(node, label,
- * DT_NODE_FULL_NAME(node)), and the live scan and the RTC section both report
- * `dev->name`. A bus node carrying a `label` would therefore print one string
- * in `hw i2c` and a different one in `hw i2c scan` and `hw rtc`, and
- * declared_names_at() -- which matches the two by string -- would silently stop
- * annotating scanned addresses.
- *
- * No board in this tree labels an I2C node today, so the two derivations agree
- * and the bug is invisible on current hardware. Using the same derivation
- * Zephyr does keeps it that way by construction rather than by luck.
- */
+/* The bus is named as Zephyr names the device (DEVICE_DT_NAME), so it matches
+ * the dev->name the scan reports. */
 #define HW_I2C_ENTRY(node_id)                                    \
 	{                                                        \
 		DEVICE_DT_NAME(DT_BUS(node_id)),                 \
@@ -222,17 +154,7 @@ struct I2cDecl {
 		(uint16_t)DT_REG_ADDR(node_id),                  \
 	},
 
-/*
- * Every enabled node that sits on an I2C bus and is an addressable chip.
- *
- * Walks the whole devicetree via DT_FOREACH_STATUS_OKAY_NODE and filters with
- * DT_ON_BUS rather than naming bus nodelabels: this tree already has boards on
- * i2c22 and i2c30 (nrf54l, seeed_lr2021_evk), so any hardcoded i2c0/1/2 list
- * silently omits their devices. Silently omitting a declared chip is the one
- * thing this report must never do.
- *
- * Nodes without both reg and compatible are skipped -- not addressable chips.
- */
+/* Every enabled, addressable node on any I2C bus. */
 #define HW_I2C_NODE(node_id)                                              \
 	IF_ENABLED(UTIL_AND(DT_ON_BUS(node_id, i2c),                      \
 		   UTIL_AND(DT_NODE_HAS_PROP(node_id, reg),                \
@@ -241,28 +163,14 @@ struct I2cDecl {
 
 const I2cDecl i2c_decls[] = {
 	DT_FOREACH_STATUS_OKAY_NODE(HW_I2C_NODE)
-	/* Sentinel. A board may declare no I2C children at all, and a
-	 * zero-length array is not valid C++. Never reported -- see
-	 * i2c_decl_count(). */
-	{ nullptr, nullptr, nullptr, 0xFFFF },
+	{ nullptr, nullptr, nullptr, 0xFFFF }, /* sentinel: never reported */
 };
 
 constexpr size_t i2c_decl_count() { return ARRAY_SIZE(i2c_decls) - 1; }
 
 #if IS_ENABLED(CONFIG_I2C)
-/*
- * The controller behind each declared device, for the live scan. Derived from
- * the same devicetree walk, so it follows whatever nodelabels a board uses
- * rather than a hardcoded i2c0/1/2 list. Entries repeat once per child and are
- * de-duplicated at scan time.
- *
- * DEVICE_DT_GET is safe here in a way it is not for the child nodes: the parent
- * of an I2C child is an I2C controller, and this table only exists when
- * CONFIG_I2C is on, so a driver is instantiated for it.
- *
- * Limitation, stated rather than hidden: a bus with no declared device at all
- * is not scanned, because nothing in the devicetree walk names it.
- */
+/* The controller of each declared device, one entry per device. A bus with no
+ * declared device is not listed, so it is not scanned. */
 #define HW_I2C_BUS_ENTRY(node_id) DEVICE_DT_GET(DT_BUS(node_id)),
 
 #define HW_I2C_BUS_NODE(node_id)                                          \
@@ -273,17 +181,13 @@ constexpr size_t i2c_decl_count() { return ARRAY_SIZE(i2c_decls) - 1; }
 
 const struct device *const i2c_bus_refs[] = {
 	DT_FOREACH_STATUS_OKAY_NODE(HW_I2C_BUS_NODE)
-	nullptr, /* sentinel, same reason as i2c_decls */
+	nullptr, /* sentinel */
 };
 
 constexpr size_t i2c_bus_ref_count() { return ARRAY_SIZE(i2c_bus_refs) - 1; }
-#endif /* CONFIG_I2C */
 
-#if IS_ENABLED(CONFIG_I2C)
-/* Name a scanned address from the devicetree, when the board declared it.
- * Every declaration at that address is listed, '|'-separated: the scan cannot
- * tell which of two parts sharing an address (BME280 and BMP388 at 0x77) is
- * the one that answered. Returns false when nothing is declared there. */
+/* The compatibles declared at addr on bus, '|'-separated. False if none, or
+ * if they do not fit. */
 bool declared_names_at(const char *bus, uint16_t addr, char *out, size_t cap)
 {
 	size_t used = 0;
@@ -296,7 +200,6 @@ bool declared_names_at(const char *bus, uint16_t addr, char *out, size_t cap)
 		int w = snprintf(out + used, cap - used, "%s%s", used ? "|" : "",
 				 i2c_decls[i].compat);
 		if (w < 0 || (size_t)w >= cap - used) {
-			/* Too long to name: the caller keeps the address alone. */
 			out[0] = '\0';
 			return false;
 		}
@@ -306,9 +209,7 @@ bool declared_names_at(const char *bus, uint16_t addr, char *out, size_t cap)
 }
 #endif /* CONFIG_I2C */
 
-/* One copy of discovery's outcome. A re-probe can publish a new one from the
- * system work queue while `hw` renders, so every line comes from this copy
- * rather than from separate reads. */
+/* One snapshot of discovery's outcome, so every line agrees with the others. */
 constexpr size_t kRtcMax = DT_NUM_INST_STATUS_OKAY(zephcore_rtc_i2c) > 0
 				   ? DT_NUM_INST_STATUS_OKAY(zephcore_rtc_i2c) : 1;
 
@@ -316,8 +217,7 @@ struct RtcView {
 	struct zephcore_rtc_entry e[kRtcMax];
 	size_t n;
 	int active;         /* index into e, or -1 */
-	unsigned unsettled; /* unprobed or all 0xFF: a "none present" is only
-			     * true when this is zero */
+	unsigned unsettled; /* unprobed or all 0xFF */
 };
 
 void rtc_view(RtcView *v)
@@ -346,6 +246,17 @@ const char *rtc_state_str(enum zephcore_rtc_state st)
 	}
 }
 
+/* The boot reset cause labels, without hints. False if the platform cannot
+ * report a cause. */
+bool reset_causes(uint32_t *cause, char *out, size_t cap)
+{
+	if (!zephcore_boot_reset_cause(cause)) {
+		return false;
+	}
+	zephcore_boot_reset_cause_str(out, cap, false);
+	return true;
+}
+
 /* ================= sections ================= */
 
 void section_board(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
@@ -368,14 +279,8 @@ void section_board(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 	}
 
 	uint32_t cause;
-	if (zephcore_boot_reset_cause(&cause)) {
-		/* 128 holds every label without hints, per boot_info.h. Hints are
-		 * off: these lines page over LoRa, where width costs packets. */
-		char causes[128];
-		zephcore_boot_reset_cause_str(causes, sizeof(causes), false);
-		/* A cause of 0 is a real answer -- the chip reported no known
-		 * cause -- and is not the same as the platform being unable to
-		 * tell us, which is the branch below. */
+	char causes[128]; /* every label without hints, per boot_info.h */
+	if (reset_causes(&cause, causes, sizeof(causes))) {
 		sink_line(s, "reset: 0x%08x%s", cause,
 			  causes[0] ? causes : " (none reported)");
 	} else {
@@ -395,14 +300,9 @@ void section_board(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 	}
 }
 
-void section_rtc(Sink *s, mesh::RTCClock *rtc)
+void section_rtc(Sink *s)
 {
-	(void)rtc;
-
-	if (!IS_ENABLED(CONFIG_ZEPHCORE_RTC_AUTODISCOVER) &&
-	    DT_NUM_INST_STATUS_OKAY(zephcore_rtc_i2c) > 0) {
-		/* The discovery stubs report nothing declared, which would
-		 * contradict `hw i2c` listing the descriptors. */
+	if (HW_RTC_DISABLED) {
 		sink_line(s, "rtc: %u declared, autodiscovery disabled",
 			  (unsigned)DT_NUM_INST_STATUS_OKAY(zephcore_rtc_i2c));
 		return;
@@ -411,15 +311,9 @@ void section_rtc(Sink *s, mesh::RTCClock *rtc)
 	size_t declared = zephcore_rtc_declared();
 
 	if (declared == 0) {
-		/* Not a failure: rtc-i2c.dtsi is opt-in per board, because its
-		 * fixed addresses collide with common parts (0x68 is both a
-		 * DS3231 and an MPU-class IMU). Say what is true -- the board
-		 * declares none -- rather than "no RTC fitted", which this
-		 * firmware has no way to know. */
 		sink_line(s, "rtc: none declared in devicetree");
 		return;
 	}
-
 	if (!zephcore_rtc_probed()) {
 		sink_line(s, "rtc: %u declared, not yet probed", (unsigned)declared);
 		return;
@@ -460,7 +354,6 @@ void section_i2c(Sink *s)
 void section_i2c_scan(Sink *s)
 {
 #if !IS_ENABLED(CONFIG_I2C)
-	/* Different from "scanned and found nothing": this build cannot scan. */
 	sink_line(s, "i2c: no I2C support compiled in");
 #else
 	unsigned buses = 0;
@@ -468,9 +361,6 @@ void section_i2c_scan(Sink *s)
 	for (size_t bi = 0; bi < i2c_bus_ref_count(); bi++) {
 		const struct device *bus = i2c_bus_refs[bi];
 
-		/* Skip a controller already scanned: the table carries one
-		 * entry per declared child, so a bus with four devices on it
-		 * appears four times. */
 		bool seen = false;
 		for (size_t j = 0; j < bi; j++) {
 			if (i2c_bus_refs[j] == bus) {
@@ -489,39 +379,20 @@ void section_i2c_scan(Sink *s)
 		}
 
 		unsigned found = 0;
-		char line[128];
-		int used = snprintf(line, sizeof(line), "%s:", bus->name);
-
-		/* A bus name long enough to fill the buffer would make every
-		 * `line + used` below out of bounds. Not reachable with today's
-		 * devicetree names, which is exactly why it needs checking here
-		 * rather than being assumed. */
-		if (used < 0 || (size_t)used >= sizeof(line)) {
-			sink_line(s, "%s: name too long to scan", bus->name);
-			continue;
-		}
-		const int header = used;
-
-		/* 0x08-0x77: the 7-bit range excluding the reserved low and
-		 * high blocks. A zero-length write is the standard probe -- it
-		 * addresses the device and stops, so a chip that would react to
-		 * a read of register 0 is not disturbed. */
-		/* Zero-length write is the standard probe, but hand it a real
-		 * pointer: i2c_write() puts buf straight into i2c_msg.buf and
-		 * some controller drivers assert on NULL before looking at len. */
-		uint8_t probe = 0;
-
 		bool stuck = false;
+		char line[128];
+		const int header = snprintf(line, sizeof(line), "%s:", bus->name);
+		int used = header;
 
+		/* A one-byte read probes each address: nothing is written to a
+		 * device that has not been identified. */
 		for (uint16_t addr = 0x08; addr <= 0x77; addr++) {
-			int rc = i2c_write(bus, &probe, 0, addr);
+			uint8_t probe;
+			int rc = i2c_read(bus, &probe, 1, addr);
 
 			if (rc == -ETIMEDOUT || rc == -EBUSY) {
-				/* A dead or held bus can take the driver's whole
-				 * timeout on every address, blocking the CLI thread
-				 * for most of a minute. -EIO is an ordinary miss.
-				 * Flush what was found first, so it reads as found
-				 * before the stop. */
+				/* A dead or held bus would take the driver's timeout
+				 * on every address. */
 				if (used > header) {
 					sink_line(s, "%s", line);
 					used = header;
@@ -537,48 +408,17 @@ void section_i2c_scan(Sink *s)
 			found++;
 
 			char nm[64];
-			bool named = declared_names_at(bus->name, addr, nm, sizeof(nm));
-
-			/* Render the token on its own first, so the decision to
-			 * wrap is made against a known length and an address can
-			 * never be dropped. */
 			char tok[72];
-			int tw = named ? snprintf(tok, sizeof(tok), " 0x%02x(%s)", addr, nm)
-				       : snprintf(tok, sizeof(tok), " 0x%02x", addr);
+			int tw = declared_names_at(bus->name, addr, nm, sizeof(nm))
+				 ? snprintf(tok, sizeof(tok), " 0x%02x(%s)", addr, nm)
+				 : snprintf(tok, sizeof(tok), " 0x%02x", addr);
 
-			if (tw < 0 || (size_t)tw >= sizeof(tok)) {
-				/* Annotation too long for the token buffer. The
-				 * address is the part that matters; keep it and
-				 * lose the name. */
-				tw = snprintf(tok, sizeof(tok), " 0x%02x", addr);
-				if (tw < 0) {
-					continue;
-				}
+			if ((size_t)(used + tw) >= sizeof(line) && used > header) {
+				sink_line(s, "%s", line);
+				used = header;
 			}
-
-			size_t toklen = (size_t)tw;
-
-			if ((size_t)used + toklen >= sizeof(line)) {
-				/* Wrap: flush what we have and restart the line,
-				 * unless it holds only the bus name. */
-				if (used > header) {
-					sink_line(s, "%s", line);
-					used = header;
-					line[used] = '\0';
-				}
-			}
-
-			if ((size_t)used + toklen < sizeof(line)) {
-				memcpy(line + used, tok, toklen + 1);
-				used += (int)toklen;
-			} else {
-				/* Even a fresh line cannot hold it, which needs a
-				 * bus name nearly as long as the buffer. Give the
-				 * address a line of its own rather than dropping a
-				 * chip that is physically present -- the one thing
-				 * a bus scan must never do. */
-				sink_line(s, "%s", tok);
-			}
+			memcpy(line + used, tok, (size_t)tw + 1);
+			used += tw;
 		}
 
 		if (found == 0) {
@@ -591,38 +431,24 @@ void section_i2c_scan(Sink *s)
 	}
 
 	if (buses == 0) {
-		/* Not "no bus enabled": buses are discovered by walking declared
-		 * devices, so the SoC may well have an enabled controller with
-		 * nothing declared on it. Say only what that walk established. */
 		sink_line(s, "i2c: no bus carries a declared device, none scanned");
 	}
 #endif /* CONFIG_I2C */
 }
 
-void section_gps(Sink *s, CommonCLICallbacks *cb)
+void section_gps(Sink *s)
 {
-#if DT_NODE_EXISTS(DT_NODELABEL(gnss)) && !HW_GNSS_OKAY
-	/* The GPS manager needs the node and its UART both okay
-	 * (HAS_GPS_UART in gps_internal.h); a disabled one is declared, not used. */
+#if DT_NODE_EXISTS(HW_GNSS_NODE) && !DT_NODE_HAS_STATUS(HW_GNSS_NODE, okay)
 	sink_line(s, "gnss: %s declared but disabled in devicetree",
-		  DT_PROP_BY_IDX(DT_NODELABEL(gnss), compatible, 0));
-#elif DT_NODE_EXISTS(DT_NODELABEL(gnss))
-	sink_line(s, "gnss: %s", DT_PROP_BY_IDX(DT_NODELABEL(gnss), compatible, 0));
-	sink_line(s, "  on %s", DT_NODE_FULL_NAME(DT_PARENT(DT_NODELABEL(gnss))));
-#if DT_NODE_HAS_PROP(DT_PARENT(DT_NODELABEL(gnss)), current_speed)
-	sink_line(s, "  baud %u",
-		  (unsigned)DT_PROP(DT_PARENT(DT_NODELABEL(gnss)), current_speed));
+		  DT_PROP_BY_IDX(HW_GNSS_NODE, compatible, 0));
+#elif DT_NODE_EXISTS(HW_GNSS_NODE)
+	sink_line(s, "gnss: %s", DT_PROP_BY_IDX(HW_GNSS_NODE, compatible, 0));
+	sink_line(s, "  on %s", DT_NODE_FULL_NAME(DT_PARENT(HW_GNSS_NODE)));
+#if DT_NODE_HAS_PROP(DT_PARENT(HW_GNSS_NODE), current_speed)
+	sink_line(s, "  baud %u", (unsigned)DT_PROP(DT_PARENT(HW_GNSS_NODE), current_speed));
 #endif
-	/* The bound driver's compatible, printed above, is the only honest model
-	 * statement. A board overlay comment naming a part is documentation, not
-	 * detection: the rak4631 overlay documents a u-blox MAX-7Q, binds
-	 * gnss-nmea-generic, and drives whatever NMEA receiver is fitted.
-	 *
-	 * Only the generic NMEA driver leaves the model genuinely unknown -- it
-	 * parses any NMEA talker and names no part. A specific driver IS the
-	 * model, so adding an "unidentified" line there would contradict the
-	 * compatible printed directly above it. */
-#if DT_NODE_HAS_COMPAT(DT_NODELABEL(gnss), gnss_nmea_generic)
+	/* The generic NMEA driver drives any receiver and names no part. */
+#if DT_NODE_HAS_COMPAT(HW_GNSS_NODE, gnss_nmea_generic)
 	sink_line(s, "  model: not identified (generic NMEA driver)");
 #endif
 #else
@@ -633,14 +459,11 @@ void section_gps(Sink *s, CommonCLICallbacks *cb)
 	sink_line(s, "  available: %s", gps_is_available() ? "yes" : "no");
 	sink_line(s, "  enabled: %s", gps_is_enabled() ? "yes" : "no");
 #endif
-	(void)cb;
 }
 
 void section_sensors(Sink *s)
 {
 #if defined(HW_HAS_SENSOR_HDR) && IS_ENABLED(CONFIG_SENSOR)
-	/* One line per part the boot probe found, environment and power
-	 * monitors alike, with the fields a fresh read of it returns. */
 	int n = env_sensor_count();
 
 	if (n <= 0) {
@@ -652,6 +475,10 @@ void section_sensors(Sink *s)
 	for (int i = 0; i < n; i++) {
 		struct env_sensor_reading r;
 
+		/* Read only a sensor whose line this page emits. */
+		if (sink_skip(s)) {
+			continue;
+		}
 		if (env_sensor_read(i, &r) != 0) {
 			sink_line(s, "  %d: read failed", i);
 			continue;
@@ -668,17 +495,12 @@ void section_sensors(Sink *s)
 			  env_sensor_is_board_local(i) ? " (board)" : "");
 	}
 #else
-	/* No sensor support compiled in -- which is a different statement from
-	 * a sensor manager that looked and found nothing. */
 	sink_line(s, "sensors: not compiled in");
 #endif
 }
 
-void section_summary(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
+void section_summary(Sink *s, CommonCLICallbacks *cb)
 {
-	/* CONFIG_BOARD, not CONFIG_BOARD_TARGET: the target already embeds the
-	 * SoC ("rak4631/nrf52840"), which read as "rak4631/nrf52840 (nrf52840)".
-	 * `hw board` still reports the full target. */
 	sink_line(s, "%s (%s)", CONFIG_BOARD, CONFIG_SOC);
 	if (cb != nullptr) {
 		sink_line(s, "fw %s role %s", cb->getFirmwareVer(), cb->getRole());
@@ -688,65 +510,40 @@ void section_summary(Sink *s, mesh::MainBoard *board, CommonCLICallbacks *cb)
 
 	rtc_view(&v);
 	if (v.active >= 0) {
-		/* A devicetree node's full name already ends in "@<addr>", so the
-		 * address is not appended here -- doing so rendered
-		 * "rtc-rv3028@52@0x52" on real hardware. */
+		/* The node's full name already ends in "@<addr>". */
 		sink_line(s, "rtc %s", v.e[v.active].name);
-	} else if (!IS_ENABLED(CONFIG_ZEPHCORE_RTC_AUTODISCOVER) &&
-		   DT_NUM_INST_STATUS_OKAY(zephcore_rtc_i2c) > 0) {
+	} else if (HW_RTC_DISABLED) {
 		sink_line(s, "rtc autodiscovery disabled");
 	} else if (zephcore_rtc_declared() == 0) {
 		sink_line(s, "rtc none declared");
 	} else if (!zephcore_rtc_probed()) {
-		/* No active entry means both "probed, none found"
-		 * and "not probed yet". Collapsing those into "none present"
-		 * states a fact discovery never established -- the distinction
-		 * `hw rtc` keeps, and a summary has no licence to be looser
-		 * about it than the section it summarises. */
 		sink_line(s, "rtc not yet probed");
+	} else if (v.unsettled > 0) {
+		sink_line(s, "rtc none found, %u unsettled", v.unsettled);
 	} else {
-		if (v.unsettled > 0) {
-			sink_line(s, "rtc none found, %u unsettled", v.unsettled);
-		} else {
-			sink_line(s, "rtc none present");
-		}
+		sink_line(s, "rtc none present");
 	}
 
-#if DT_NODE_EXISTS(DT_NODELABEL(gnss)) && !HW_GNSS_OKAY
-	sink_line(s, "gnss %s disabled", DT_PROP_BY_IDX(DT_NODELABEL(gnss), compatible, 0));
-#elif DT_NODE_EXISTS(DT_NODELABEL(gnss))
-	sink_line(s, "gnss %s", DT_PROP_BY_IDX(DT_NODELABEL(gnss), compatible, 0));
+#if DT_NODE_EXISTS(HW_GNSS_NODE) && !DT_NODE_HAS_STATUS(HW_GNSS_NODE, okay)
+	sink_line(s, "gnss %s disabled", DT_PROP_BY_IDX(HW_GNSS_NODE, compatible, 0));
+#elif DT_NODE_EXISTS(HW_GNSS_NODE)
+	sink_line(s, "gnss %s", DT_PROP_BY_IDX(HW_GNSS_NODE, compatible, 0));
 #else
 	sink_line(s, "gnss none");
 #endif
 
 	sink_line(s, "i2c %u declared", (unsigned)i2c_decl_count());
 
-	/* Always emitted, including when unsupported: the docs pin the summary's
-	 * field list, and a line that silently disappears on some platforms makes
-	 * the schema depend on the board. */
 	uint32_t cause;
-	if (zephcore_boot_reset_cause(&cause)) {
-		/* 128 holds every label without hints, per boot_info.h. Hints are
-		 * off: these lines page over LoRa, where width costs packets. */
-		char causes[128];
-		zephcore_boot_reset_cause_str(causes, sizeof(causes), false);
+	char causes[128];
+	if (reset_causes(&cause, causes, sizeof(causes))) {
 		sink_line(s, "reset%s", causes[0] ? causes : " none");
 	} else {
 		sink_line(s, "reset not supported");
 	}
-	(void)board;
 }
 
-/*
- * Match `name` as a whole word at the start of arg, returning the remainder or
- * nullptr.
- *
- * A bare prefix test is the surrounding CommonCLI house style, but this command
- * documents a usage string for anything it does not recognise, and a prefix
- * test breaks that promise: `hw boardwalk` would run `hw board` and quietly
- * discard the rest.
- */
+/* The rest of arg after `name` as a whole word, or nullptr. */
 const char *match_word(const char *arg, const char *name)
 {
 	size_t n = strlen(name);
@@ -760,14 +557,8 @@ const char *match_word(const char *arg, const char *name)
 	return arg + n;
 }
 
-/*
- * Parse the optional trailing page index. False when the tail is neither empty
- * nor a plain number, so `hw board xyz` reaches the usage string rather than
- * being silently treated as `hw board`.
- *
- * Unsigned end to end, and clamped rather than wrapped: an index parsed
- * unsigned and then rendered signed is what emits an unresumable "next:-1".
- */
+/* Parse the optional trailing page index. False unless the tail is empty or
+ * a plain number. */
 bool parse_tail(const char *rest, unsigned *start)
 {
 	*start = 0;
@@ -798,12 +589,10 @@ bool parse_tail(const char *rest, unsigned *start)
 
 } /* namespace */
 
-void handle(const char *command, char *reply, size_t cap, bool local,
-	    mesh::MainBoard *board, mesh::RTCClock *rtc,
-	    CommonCLICallbacks *callbacks)
+void handle(const char *command, char *reply, size_t cap,
+	    mesh::MainBoard *board, CommonCLICallbacks *callbacks)
 {
-	/* command starts at "hw"; step past it and any spaces. */
-	const char *arg = command + 2;
+	const char *arg = command + 2; /* past "hw" */
 	while (*arg == ' ') {
 		arg++;
 	}
@@ -812,18 +601,15 @@ void handle(const char *command, char *reply, size_t cap, bool local,
 	const char *rest;
 	unsigned start = 0;
 
-	/* Each arm must match a whole word AND carry a valid tail; a branch that
-	 * matches the word but not the tail falls through to the usage string. */
 	if (*arg == '\0' || ((*arg >= '0' && *arg <= '9') && parse_tail(arg, &start))) {
-		/* "hw N" resumes the summary, which pages like any section. */
 		sink_init(&s, reply, cap, start);
-		section_summary(&s, board, callbacks);
+		section_summary(&s, callbacks);
 	} else if ((rest = match_word(arg, "board")) && parse_tail(rest, &start)) {
 		sink_init(&s, reply, cap, start);
 		section_board(&s, board, callbacks);
 	} else if ((rest = match_word(arg, "rtc")) && parse_tail(rest, &start)) {
 		sink_init(&s, reply, cap, start);
-		section_rtc(&s, rtc);
+		section_rtc(&s);
 	} else if ((rest = match_word(arg, "i2c scan")) && parse_tail(rest, &start)) {
 		sink_init(&s, reply, cap, start);
 		section_i2c_scan(&s);
@@ -832,16 +618,16 @@ void handle(const char *command, char *reply, size_t cap, bool local,
 		section_i2c(&s);
 	} else if ((rest = match_word(arg, "gps")) && parse_tail(rest, &start)) {
 		sink_init(&s, reply, cap, start);
-		section_gps(&s, callbacks);
+		section_gps(&s);
 	} else if ((rest = match_word(arg, "sensors")) && parse_tail(rest, &start)) {
 		sink_init(&s, reply, cap, start);
 		section_sensors(&s);
 	} else if ((rest = match_word(arg, "all")) && parse_tail(rest, &start)) {
 		sink_init(&s, reply, cap, start);
 		section_board(&s, board, callbacks);
-		section_rtc(&s, rtc);
+		section_rtc(&s);
 		section_i2c(&s);
-		section_gps(&s, callbacks);
+		section_gps(&s);
 		section_sensors(&s);
 	} else {
 		snprintf(reply, cap,
@@ -850,7 +636,6 @@ void handle(const char *command, char *reply, size_t cap, bool local,
 	}
 
 	sink_finish(&s);
-	(void)local;
 }
 
 } /* namespace zephcore_hw */
