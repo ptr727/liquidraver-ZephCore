@@ -18,15 +18,10 @@ extern "C" {
 /**
  * @brief Erase every ZephCore storage region and remount the filesystems.
  *
- * Unmounts /lfs (and /ext when the board has QSPI), flattens lfs_partition,
- * storage_partition (BLE bonds NVS) and qspi_storage_partition where each
- * exists, then remounts.  A blank LittleFS partition is auto-formatted by
- * fs_mount(), so the volume comes back empty rather than corrupt.
- *
- * This is the only path that erases the LittleFS *volume*.  Deleting files
- * cannot recover a volume another firmware has written into — on nRF52840 the
- * Adafruit core's InternalFileSystem lives at 0xED000, inside our 0xD4000
- * lfs_partition, and its format() scribbles our top 7 blocks.
+ * Unmounts /lfs (and /ext), flattens lfs_partition, storage_partition (BLE
+ * bonds) and qspi_storage_partition where each exists, then remounts; a blank
+ * partition is formatted by fs_mount(). The only path that erases the
+ * LittleFS volume itself.
  *
  * @param out_ext_mounted  optional; receives whether /ext came back mounted.
  *                         Set to false on boards with no QSPI.
@@ -43,6 +38,17 @@ bool zephcore_fs_format_all(bool *out_ext_mounted);
  * @return true if /ext is mounted; always false on boards with no QSPI.
  */
 bool zephcore_fs_mount_ext(void);
+
+/**
+ * @brief Put the /ext flash into deep power-down, for a role that keeps
+ * nothing on it (repeater, room server, observer).
+ *
+ * Unmounts /ext if a format left it mounted, initialises the deferred flash,
+ * then suspends it: the part gets its Deep Power-Down command and the bus
+ * pads go to their sleep state.  Idempotent; a no-op on boards with no QSPI.
+ * zephcore_fs_format_all() and zephcore_fs_mount_ext() resume the part.
+ */
+void zephcore_fs_ext_power_down(void);
 
 #ifdef __cplusplus
 }

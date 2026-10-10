@@ -3,7 +3,7 @@
  *
  * Compact raw-I2C hardware-RTC auto-discovery. See ZephyrRTCDiscover.h.
  *
- * Register layouts (sec/min/hour/.../month/year, all BCD) and the per-chip
+ * Register layouts (sec/min/hour/.../month/year) and the per-chip
  * power-loss flags are carried in devicetree via the "zephcore,rtc-i2c"
  * binding, so this reader is generic — adding a new chip is a DT node, not
  * code. Maps were taken from Zephyr's own drivers (rtc_pcf8563.c,
@@ -39,6 +39,9 @@ struct rtc_desc {
 	uint8_t  status_reg;   /* power-loss flag register, or RTC_STATUS_IN_SECONDS */
 	uint8_t  status_mask;  /* "time unreliable" bit within status_reg */
 	const uint8_t *zero;   /* 7 bytes of bits the data sheet shows as 0, or NULL */
+	bool     week_one_hot; /* weekday as one bit per day, not 0-6 */
+	uint8_t  h12_reg;      /* register of the 12-hour bit */
+	uint8_t  h12_mask;     /* 12-hour bit, or 0 if none */
 #if RTC_RV3028_CFG
 	const uint8_t *cfg;    /* rv3028-eeprom-config triplets, or NULL */
 	uint8_t  cfg_len;
@@ -78,6 +81,10 @@ DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_CFG_ARRAY)
 #define RTC_CFG_FIELDS(node)
 #endif
 
+#define RTC_H12(node, i)                                              \
+	COND_CODE_1(DT_NODE_HAS_PROP(node, twelve_hour_bit),          \
+		    (DT_PROP_BY_IDX(node, twelve_hour_bit, i)), (0))
+
 #define RTC_DESC_ENTRY(node)                                          \
 	{                                                             \
 		.bus         = DEVICE_DT_GET(DT_BUS(node)),           \
@@ -89,6 +96,9 @@ DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_CFG_ARRAY)
 		.zero        = COND_CODE_1(                           \
 			DT_NODE_HAS_PROP(node, zero_mask),             \
 			(RTC_ZERO_NAME(node)), (NULL)),                \
+		.week_one_hot = DT_PROP(node, weekday_one_hot),       \
+		.h12_reg     = (uint8_t)RTC_H12(node, 0),             \
+		.h12_mask    = (uint8_t)RTC_H12(node, 1),             \
 		RTC_CFG_FIELDS(node)                                  \
 		.name        = DT_NODE_FULL_NAME(node),               \
 	},
@@ -206,15 +216,9 @@ static bool rtc_all_ff(const uint8_t blk[7])
 	return true;
 }
 
-/* Decide whether the device at d is the RTC it declares. A first read that
- * ends in -EIO means nothing is there: that is an address NACK on the nRF and
- * ESP32 drivers, though a data NACK, and on nRF any bus error event, read the
- * same. A bus that is not ready, or any other failure, such as a timeout, is
- * RTC_UNREAD, no evidence either way. A first read that is all 0xFF is an
- * erased EEPROM, though a real RTC can power up that way, so it is skipped
- * for now. Otherwise the device is ruled out only when two reads each rule it
- * out: a failed second read does not, an all-0xFF second read does, and an
- * unreadable power-loss flag cannot vouch for the fields. RTC_FOUND leaves
+/* Decide whether the device at d is the RTC it declares: ruled out only when
+ * two reads each rule it out. A first read ending in -EIO is RTC_ABSENT (a
+ * NACK); a bus not ready or any other failure is RTC_UNREAD. RTC_FOUND leaves
  * the block to decode in blk; RTC_FOUND_GARBLED is this RTC with no clean
  * read to take a time from. */
 static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
@@ -245,8 +249,33 @@ static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 	return RTC_FOUND;
 }
 
-/* The 7-byte BCD time block for an epoch, in d's register order. */
-static void rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk[7])
+/* Clear a set 12-hour bit and re-read blk; the chip converts its hours
+ * itself. False on a failed or FFh read of the bit, or a failed clear or
+ * re-read. */
+static bool rtc_clear_12h(const struct rtc_desc *d, uint8_t blk[7])
+{
+	uint8_t r;
+
+	if (d->h12_mask == 0) {
+		return true;
+	}
+	if (i2c_reg_read_byte(d->bus, d->addr, d->h12_reg, &r) != 0 || r == 0xFF) {
+		return false;
+	}
+	if (!(r & d->h12_mask)) {
+		return true;
+	}
+	if (i2c_reg_write_byte(d->bus, d->addr, d->h12_reg, r & ~d->h12_mask) != 0 ||
+	    i2c_burst_read(d->bus, d->addr, d->time_reg, blk, 7) != 0) {
+		return false;
+	}
+	LOG_INF("%s: 12-hour mode cleared", d->name);
+	return true;
+}
+
+/* The 7-byte time block for an epoch, in d's register order. False outside
+ * 2000-2099: the year is written as two BCD digits with no century. */
+static bool rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk[7])
 {
 	int y;
 	unsigned m, day;
@@ -257,14 +286,18 @@ static void rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk
 	unsigned sec  = rem % 60;
 	unsigned dow  = (unsigned)(((epoch / 86400) + 4) % 7);  /* 1970-01-01 = Thu */
 
+	if (y < 2000 || y > 2099) {
+		return false;
+	}
 	blk[0] = BIN2BCD(sec);
 	blk[1] = BIN2BCD(min);
 	blk[2] = BIN2BCD(hour);
 	/* weekday occupies whichever of index 3/4 the date doesn't. */
 	blk[d->date_index] = BIN2BCD(day);
-	blk[d->date_index == 4 ? 3 : 4] = (uint8_t)dow;
+	blk[d->date_index == 4 ? 3 : 4] = d->week_one_hot ? (uint8_t)BIT(dow) : (uint8_t)dow;
 	blk[5] = BIN2BCD(m);
 	blk[6] = BIN2BCD((unsigned)(y % 100));
+	return true;
 }
 
 /* Clear the power-loss flag (for chips whose flag is a separate reg;
@@ -402,16 +435,10 @@ static uint8_t rv3028_cfg_backup_ram(const struct rtc_desc *d, uint8_t ram)
 	return ram;
 }
 
-/* Store the descriptor's rv3028-eeprom-config in the chip's EEPROM. The
- * EEPROM is only touched with automatic refresh held off (4.6.7) and backup
- * switchover disabled in RAM (3.15.6: BSM 00 for any EEPROM read or write).
- * Each byte is compared against the EEPROM itself (4.6.6) and written only if
- * it differs (4.6.5). A closing Refresh (4.6.4) reloads RAM from the EEPROM,
- * switching back to the stored BSM, and the config is read back on every run.
- * A triplet outside 35h-37h, masking an unimplemented bit, or repeating a
- * register is ignored, so a devicetree mistake cannot write on every boot.
- * Reports whether the config was confirmed, and if so whether EERD, which
- * also stops the daily refresh, was cleared afterwards. */
+/* Store the descriptor's rv3028-eeprom-config in the chip's EEPROM, writing
+ * only bytes that differ, with refresh and backup switchover held off as the
+ * data sheet requires. Reports whether the config was confirmed, and if so
+ * whether EERD was cleared afterwards. */
 enum rv3028_store { RV3028_STORED, RV3028_EERD_SET, RV3028_NOT_STORED };
 
 static enum rv3028_store rv3028_store_config(const struct rtc_desc *d)
@@ -564,8 +591,11 @@ static void rv3028_save_retry_fn(struct k_work *work)
 	uint8_t blk[7];
 
 	ARG_UNUSED(work);
-	rtc_time_block(s_active, s_save_epoch +
-		       (uint32_t)((k_uptime_get() - s_save_at) / 1000), blk);
+	if (!rtc_time_block(s_active, s_save_epoch +
+			    (uint32_t)((k_uptime_get() - s_save_at) / 1000), blk)) {
+		LOG_WRN("RTC %s: time outside 2000-2099 not written", s_active->name);
+		return;
+	}
 	if (!rv3028_steady(s_active, blk, true)) {
 		if (++s_save_tries < RTC_SAVE_RETRIES) {
 			k_work_schedule(&s_save_retry, RTC_SAVE_RETRY);
@@ -611,6 +641,9 @@ static bool rtc_probe_run(uint32_t *epoch_out, uint8_t state[],
 			continue;
 		}
 		state[i] = ZEPHCORE_RTC_PRESENT;
+		if (v == RTC_FOUND && !rtc_clear_12h(d, blk)) {
+			v = RTC_FOUND_GARBLED;
+		}
 
 #if RTC_RV3028_CFG
 		/* Only a clean identification is configured: the store writes to
@@ -734,7 +767,10 @@ void zephcore_rtc_save(uint32_t epoch)
 	const struct rtc_desc *d = s_active;
 	uint8_t blk[7];
 
-	rtc_time_block(d, epoch, blk);
+	if (!rtc_time_block(d, epoch, blk)) {
+		LOG_WRN("RTC %s: time outside 2000-2099 not written", d->name);
+		return;
+	}
 #if RTC_RV3028_CFG
 	if (d->cfg != NULL) {
 		(void)k_work_cancel_delayable(&s_save_retry);

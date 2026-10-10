@@ -33,7 +33,7 @@ list(APPEND BOARD_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 # Service advertises (CONFIG_BT_DIS_FW_REV_STR, generated from it below), what the
 # GitHub release is tagged/named, and what the Mesh America catalog uses as its
 # version key. The release workflow reads this line directly — keep its form.
-set(ZEPHCORE_FIRMWARE_VERSION "1.17.6-zephcore")
+set(ZEPHCORE_FIRMWARE_VERSION "1.17.7-zephcore")
 
 # ========== Helpers ==========
 # Append FILE to the overlay list once, keeping its FIRST position. Position is
@@ -172,27 +172,37 @@ if(ZEPHCORE_PLATFORM STREQUAL "esp32")
     # first-order term in a battery node's draw — unlike nRF52, which already
     # idles at microamps. Every ESP32 build runs at 80 MHz, matching Arduino
     # MeshCore; hal_espressif derives ESP_DEFAULT_CPU_FREQ_MHZ from cpu@0, so no
-    # module patch is needed. Observers keep the SoC maximum (240 MHz S3/classic,
-    # 160 MHz C3/C6): full WiFi + TLS + MQTT on mains or big-panel solar, so
-    # throughput matters more than current. "Don't apply the overlay" rather than
-    # an override, so the per-SoC maximum is inherited, not hardcoded.
-    if(NOT ZEPHCORE_BUILD_ROLE STREQUAL "observer")
-        zephcore_add_overlay(${_zc}/esp32_cpu_80mhz.overlay)
-        message(STATUS "  ESP32 CPU: 80 MHz (observers keep the SoC maximum)")
+    # module patch is needed. Every role, observers included: 80 MHz is the
+    # lowest clock WiFi runs at and carries WiFi + TLS + MQTT
+    # (devdocs/lld/13-power-management.md, section 12).
+    zephcore_add_overlay(${_zc}/esp32_cpu_80mhz.overlay)
+    message(STATUS "  ESP32 CPU: 80 MHz")
+
+    # SoC temperature sensor (MCU temperature in telemetry, image-calibration
+    # drift on LR11xx/LR2021): every role, every SoC that has the node. The
+    # classic ESP32 (".../esp32/...") has neither the node nor a driver.
+    if(NOT BOARD MATCHES "/esp32/")
+        zephcore_add_overlay(${_zc}/esp32_coretemp.overlay)
     endif()
 
-    # Light sleep: REPEATERS on boards that declare it. 80 MHz cuts the idle draw;
-    # light sleep is what removes it (mechanism and requirements:
-    # boards/common/pm_esp32.conf). Repeaters only: the Espressif HCI driver takes
-    # no pm_policy locks, so a companion would light-sleep mid-advertising or
-    # mid-connection; repeater.conf sets CONFIG_BT=n. Which boards qualify is a
-    # hardware fact (DIO1 on an RTC-wake-capable GPIO, and validated on hardware),
-    # so the board declares it: `capabilities: light_sleep: true` in its
-    # zephcore.yml. pm_esp32.conf lists which boards fail the wiring test and why;
-    # a board that passes it but was never validated (v4_r8) stays undeclared.
+    # Light sleep: on boards that declare it. 80 MHz cuts the idle draw; light
+    # sleep is what removes it (mechanism and requirements:
+    # boards/common/pm_esp32.conf). Which boards qualify is a hardware fact
+    # (the radio IRQ and button wake the SoC, pins are held, validated on
+    # hardware), so the board declares it in its zephcore.yml:
+    # `light_sleep: true` for the repeater, `light_sleep_companion: true` for the
+    # companion. Two lines because they differ: a repeater sleeps by default, so
+    # its line waits for validation on hardware (v4_r8, which only passes the
+    # wiring test, stays undeclared); a companion sleeps only after
+    # `powersaving on`, and its build costs about 4 KB of DRAM, which a WiFi +
+    # BLE companion without PSRAM gives up in contacts
+    # (devdocs/lld/13-power-management.md, section 13).
     if(ZEPHCORE_BUILD_ROLE STREQUAL "repeater" AND ZEPHCORE_BOARD_LIGHT_SLEEP)
         zephcore_add_conf(${_zc}/pm_esp32.conf)
-        message(STATUS "  ESP32 light sleep: auto-enabled (DIO1 wake-capable repeater board)")
+        message(STATUS "  ESP32 light sleep: auto-enabled (repeater, board declares it)")
+    elseif(ZEPHCORE_BUILD_ROLE STREQUAL "companion" AND ZEPHCORE_BOARD_LIGHT_SLEEP_COMPANION)
+        zephcore_add_conf(${_zc}/pm_esp32.conf)
+        message(STATUS "  ESP32 light sleep: auto-enabled (companion, board declares it; opt-in at run time)")
     endif()
 
     # WiFi OTA for S3/C-series repeaters: WiFi AP + HTTP server + MCUboot image
@@ -378,6 +388,8 @@ target_sources(app PRIVATE
   helpers/buzzer_gate.c
   # QSPI bring-up probe. Self-stubs unless CONFIG_ZEPHCORE_QSPI_RDID_PROBE.
   helpers/qspi_probe.c
+  # TEMPORARY bench instrumentation. Self-stubs unless CONFIG_ZEPHCORE_POWER_DIAG.
+  helpers/power_diag.c
   # Storage shared by every role's store (the companion builds
   # ZephyrDataStore, the other three RepeaterDataStore): factory format,
   # power-safe replace and non-logging probes, the identity file, and the

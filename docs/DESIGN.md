@@ -23,7 +23,7 @@ multiple MCU families.
    bounded recovery (§8.7).
 3. **Upstream portability** — most new mesh features arrive from Arduino MeshCore, so code that mirrors upstream
    stays structurally identical to it (§9).
-4. **Hardware breadth** — one codebase across nRF52840, nRF54L15, the ESP32 family, EFR32MG24, STM32WL and native
+4. **Hardware breadth** — one codebase across nRF52840, nRF54L15/LM20A, the ESP32 family, EFR32MG24, STM32WL and native
    Linux, with four radio families.
 5. **Resource discipline** — static allocation for the packet path; companion builds are RAM-bound.
 
@@ -104,7 +104,7 @@ flowchart LR
 
 | Dimension | Values | Selected by |
 |---|---|---|
-| Platform | nRF52840, nRF54L15, ESP32 classic, ESP32-S3/C3/C6, EFR32MG24, STM32WL, native Linux | board directory |
+| Platform | nRF52840, nRF54L15, nRF54LM20A, ESP32 classic, ESP32-S3/C3/C6, EFR32MG24, STM32WL, native Linux | board directory |
 | Radio | SX126x family (default), LR1110, LR2021, SX127x | devicetree / board conf |
 | Role | companion (default), repeater, room server, observer | user `EXTRA_CONF_FILE` |
 | UI | none, button UI, joystick/keypad UI (companion) | board Kconfig select |
@@ -302,6 +302,10 @@ it polls external state. Repeater and room server share one loop (`server_main_c
 - Low-battery policy for every companion (`PowerPolicy`): three low readings 30 s apart, never on external power,
   never on a reading under 2000 mV (no battery).
 - GPS: duty-cycled; holds the SoC light-sleep lock only while acquiring.
+- ESP32 companions on boards that declare it can light-sleep after `powersaving on` (off by default): never
+  while a USB host is attached, the display is on or a BLE link is not yet encrypted.
+- WiFi uplink and observer: the station uses WiFi modem sleep. On ESP32 light-sleep repeaters it holds the SoC
+  light-sleep lock only until the MQTT session is up, and again whenever the link or the session is lost.
 
 ### 8.4 Security
 - On-air: Ed25519 identities, X25519 ECDH, AES-128 + truncated HMAC (upstream scheme).

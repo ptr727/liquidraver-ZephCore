@@ -385,7 +385,7 @@ config ZEPHCORE_BLE_CONN_MAX_INTERVAL
 	range 6 3200
 	help
 	  Maximum BLE connection interval in 1.25ms units.
-	  36 = 45ms. Matches Arduino default. Higher = lower power when idle.
+	  36 = 45ms. Higher = lower power when idle.
 
 config ZEPHCORE_BLE_CONN_LATENCY
 	int "BLE connection latency (skip events)"
@@ -393,7 +393,7 @@ config ZEPHCORE_BLE_CONN_LATENCY
 	range 0 500
 	help
 	  Skip up to N connection events when idle to save power.
-	  4 = skip 4 events (effective interval up to 375ms idle).
+	  4 = skip 4 events (effective interval up to 225ms idle at 45ms).
 
 config ZEPHCORE_BLE_CONN_TIMEOUT
 	int "BLE supervision timeout (units: 10ms)"
@@ -726,6 +726,14 @@ config ZEPHCORE_VBAT_MV_MULTIPLIER
 
 	  Formula: mv = (raw * multiplier) / 4096
 
+config ZEPHCORE_LED_PWM
+	def_bool $(dt_alias_enabled,heartbeat-pwm-led) || $(dt_alias_enabled,lora-tx-pwm-led)
+	select PWM
+	help
+	  Set when the devicetree has a heartbeat-pwm-led or lora-tx-pwm-led
+	  alias: that LED is driven through PWM and dimmed by leds.brightness.
+	  Pulls in CONFIG_PWM automatically.
+
 endmenu
 
 menu "Debug & Logging"
@@ -867,6 +875,15 @@ config ZEPHCORE_LOOP_WAKE_STATS
 	  after a change to its scheduling.  Measure on the release config with
 	  this passed by -D, so debug logging does not add wakes of its own.
 
+config ZEPHCORE_POWER_DIAG
+	bool "CLI: CPU wake sources, sleep fraction, enabled peripherals (TEMPORARY)"
+	depends on SOC_NRF52840
+	help
+	  Bench instrumentation: `get pwr <n>` reports which interrupts wake the
+	  CPU, how much of the time it sleeps, and which clocks and peripherals
+	  stay enabled.  Build with boards/common/power_diag.conf, which turns
+	  on the user tracing hooks it counts from.
+
 config ZEPHCORE_LORA_RETENTION_DEBUG
 	bool "SX126x: verify the warm-start retention list on air"
 	depends on ZEPHCORE_RADIO_NATIVE
@@ -902,8 +919,9 @@ config ZEPHCORE_RTC_AUTODISCOVER
 	  backed RTC opt in by including boards/common/rtc-i2c.dtsi or
 	  declaring their own node; if a chip holds a valid time it is
 	  restored at boot — shown tagged "L" until the next external sync.
-	  On every GPS/app/CLI sync the time is written back so it survives
-	  power-off. A node with rv3028-eeprom-config has its time read and
+	  On every GPS/app/CLI sync to a time within 2000-2099 the time is
+	  written back so it survives power-off. A node with
+	  rv3028-eeprom-config has its time read and
 	  written with the chip's backup switch flag cleared before and
 	  checked after, and, when its chip is the one adopted, a read
 	  identifies it, and a checked time read just before the store shows
